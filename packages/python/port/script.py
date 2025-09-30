@@ -907,8 +907,32 @@ def extract_viewed(zipfile):
         },
     )
 
+def is_html_format(zipfile):
+    """
+    Check if the Instagram export is in HTML format by looking for .html files
+    and absence of .json files in the expected structure.
+    """
+    namelist = zipfile.namelist()
+
+    # Check for HTML files (Instagram HTML exports contain index.html and other .html files)
+    has_html = any(name.endswith('.html') for name in namelist)
+
+    # Check for JSON files in expected Instagram data structure
+    has_json_data = any(
+        name.endswith('.json') and ('messages' in name or 'content' in name or 'ads_and_topics' in name)
+        for name in namelist
+    )
+
+    # If we have HTML files but no JSON data files, it's likely HTML format
+    return has_html and not has_json_data
+
+
 def extract_data(path, locale="en"):
     zfile = zipfile.ZipFile(path)
+
+    # Check if this is an HTML format export
+    if is_html_format(zfile):
+        raise HtmlFormatError("Instagram data export is in HTML format, JSON format is required")
 
     return [
         extract_summary_data(zfile, locale),
@@ -931,6 +955,10 @@ ExtractionResult = namedtuple(
 
 
 class SkipToNextStep(Exception):
+    pass
+
+
+class HtmlFormatError(Exception):
     pass
 
 
@@ -958,6 +986,13 @@ class DataDonationProcessor:
                     if try_again:
                         continue
                     return
+                except HtmlFormatError:
+                    self.log(f"HTML format detected - prompting for retry with instructions")
+                    try_again = yield from self.prompt_html_format_retry()
+                    if try_again:
+                        continue
+                    yield donate(f"{self.session_id}-html-format-attempt", '[{ "message": "HTML format upload attempted" }]')
+                    return
                 else:
                     if extraction_result is None:
                         try_again = yield from self.prompt_retry()
@@ -972,6 +1007,12 @@ class DataDonationProcessor:
     def prompt_retry(self):
         retry_result = yield render_donation_page(
             self.platform, [retry_confirmation(self.platform)]
+        )
+        return retry_result.__type__ == "PayloadTrue"
+
+    def prompt_html_format_retry(self):
+        retry_result = yield render_donation_page(
+            self.platform, [html_format_retry_confirmation(self.platform)]
         )
         return retry_result.__type__ == "PayloadTrue"
 
@@ -1118,6 +1159,34 @@ def retry_confirmation(platform):
             "de": "Weiter",
             "it": "Continua",
             "nl": "Verder",
+        }
+    )
+    return props.PropsUIPromptConfirm(text, ok, cancel)
+
+
+def html_format_retry_confirmation(platform):
+    text = props.Translatable(
+        {
+            "en": "The uploaded file contains Instagram data in HTML format, but we need JSON format.",
+            "de": "Die hochgeladene Datei enthält Instagram-Daten im HTML-Format, aber wir benötigen das JSON-Format.",
+            "it": "Il file caricato contiene dati Instagram in formato HTML, ma abbiamo bisogno del formato JSON.",
+            "nl": "Het geüploade bestand bevat Instagram-gegevens in HTML-formaat, maar we hebben JSON-formaat nodig.",
+        }
+    )
+    ok = props.Translatable(
+        {
+            "en": "Try again with JSON format",
+            "de": "Erneut mit JSON-Format versuchen",
+            "it": "Riprova con formato JSON",
+            "nl": "Probeer opnieuw met JSON-formaat",
+        }
+    )
+    cancel = props.Translatable(
+        {
+            "en": "Cancel",
+            "de": "Abbrechen",
+            "it": "Annulla",
+            "nl": "Annuleren",
         }
     )
     return props.PropsUIPromptConfirm(text, ok, cancel)
