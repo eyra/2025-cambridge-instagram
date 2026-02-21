@@ -450,11 +450,11 @@ def get_media_creation_timestamps(items):
 
 
 def get_content_posts_timestamps(zipfile):
-    # Old format
+    # Path: */content/posts_*.json
     for data in glob_json(zipfile, "*/content/posts_*.json"):
 
         yield from get_media_creation_timestamps(data)
-    # New format
+    # Path: your_instagram_activity/media/posts_*.json
     for data in glob_json(zipfile, "your_instagram_activity/media/posts_*.json"):
         for post in data:
             for media in post["media"]:
@@ -477,12 +477,12 @@ def df_from_timestamps(timestamps, column):
 
 
 def stories_timestamps(zipfile):
-    # Old format
+    # Path: */content/stories.json
     for data in glob_json(zipfile, "*/content/stories.json"):
         for item in data["ig_stories"]:
             yield parse_datetime(item["creation_timestamp"])
 
-    # New format
+    # Path: your_instagram_activity/media/stories.json
     for data in glob_json(zipfile, "your_instagram_activity/media/stories.json"):
         for item in data["ig_stories"]:
             yield parse_datetime(item["creation_timestamp"])
@@ -640,13 +640,23 @@ def get_post_comments_timestamps(zipfile):
 
 def get_string_map_timestamps(zipfile, pattern, key=None):
     for data in glob_json(zipfile, pattern):
-        if key is not None:
+        # Handle both nested format (dict with wrapper key) and flat format (list at top level)
+        if key is not None and isinstance(data, dict) and key in data:
             data = data[key]
         if isinstance(data, list):
             for item in data:
-                yield parse_datetime(item["string_map_data"]["Time"]["timestamp"])
+                # Flat format: timestamp directly on item
+                if "timestamp" in item:
+                    yield parse_datetime(item["timestamp"])
+                # Nested format: in string_map_data.Time.timestamp
+                elif "string_map_data" in item:
+                    yield parse_datetime(item["string_map_data"]["Time"]["timestamp"])
         else:
-            yield parse_datetime(data["string_map_data"]["Time"]["timestamp"])
+            # Nested format: single object with string_map_data
+            if "string_map_data" in data:
+                yield parse_datetime(data["string_map_data"]["Time"]["timestamp"])
+            elif "timestamp" in data:
+                yield parse_datetime(data["timestamp"])
 
 
 
