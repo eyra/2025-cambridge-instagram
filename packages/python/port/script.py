@@ -20,7 +20,7 @@ filter_start = datetime.datetime.now() - datetime.timedelta(weeks=4 * 6)
 datetime_format = "%Y-%m-%d %H:%M:%S"
 
 # Maximum number of rows to include in any table
-MAX_TABLE_ROWS = 7000
+MAX_TABLE_ROWS = 50000
 
 i18n_table = {
     "followers": {
