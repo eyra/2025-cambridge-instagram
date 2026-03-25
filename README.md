@@ -243,6 +243,10 @@ When your data donation application is ready for deployment:
 
 To use the release in the Next platform, add a "Donate task" and select the generated ZIP file as the "Flow application".
 
+## Important Disclaimer
+
+Please review the [disclaimer](./DISCLAIMER.md) in this repository for important information about technical limitations, logging behavior, and data handling considerations.
+
 ## Funding
 
 Feldspar is part of the Port program for data donation and has been funded by the UU, PDI-SSH ([D3i project](https://datadonation.eu/)), and [Eyra](https://www.eyra.co/).
