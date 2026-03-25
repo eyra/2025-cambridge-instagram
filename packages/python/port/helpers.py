@@ -155,7 +155,7 @@ def run_test_flow(input_value: str):
     """Run a test flow with the given input value."""
     from port.main import start
 
-    flow = start({"locale": "en", "sessionId": "test"})
+    flow = start("test")
     run_generator_with_prompt(flow, "PayloadString", input_value)
 
 

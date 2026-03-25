@@ -19,9 +19,6 @@ filter_start = datetime.datetime.now() - datetime.timedelta(weeks=4 * 6)
 
 datetime_format = "%Y-%m-%d %H:%M:%S"
 
-# Maximum number of rows to include in any table
-MAX_TABLE_ROWS = 50000
-
 i18n_table = {
     "followers": {
         "en": "Followers",
@@ -70,36 +67,6 @@ i18n_table = {
         "de": "Anzeigen angesehen",
         "it": "Annunci visualizzati",
         "nl": "Advertenties bekeken"
-    },
-    "posts_published_recent": {
-        "en": "Posts published (past 6 months)",
-        "de": "Veröffentlichte Beiträge (letzte 6 Monate)",
-        "it": "Post pubblicati (ultimi 6 mesi)",
-        "nl": "Gepubliceerde berichten (afgelopen 6 maanden)"
-    },
-    "stories_published_recent": {
-        "en": "Stories published (past 6 months)",
-        "de": "Veröffentlichte Stories (letzte 6 Monate)",
-        "it": "Storie pubblicate (ultimi 6 mesi)",
-        "nl": "Gepubliceerde verhalen (afgelopen 6 maanden)"
-    },
-    "comments_published_recent": {
-        "en": "Comments published (past 6 months)",
-        "de": "Veröffentlichte Kommentare (letzte 6 Monate)",
-        "it": "Commenti pubblicati (ultimi 6 mesi)",
-        "nl": "Gepubliceerde reacties (afgelopen 6 maanden)"
-    },
-    "messages_sent_recent": {
-        "en": "Messages sent (past 6 months)",
-        "de": "Gesendete Nachrichten (letzte 6 Monate)",
-        "it": "Messaggi inviati (ultimi 6 mesi)",
-        "nl": "Verzonden berichten (afgelopen 6 maanden)"
-    },
-    "messages_received_recent": {
-        "en": "Messages received (past 6 months)",
-        "de": "Empfangene Nachrichten (letzte 6 Monate)",
-        "it": "Messaggi ricevuti (ultimi 6 mesi)",
-        "nl": "Ontvangen berichten (afgelopen 6 maanden)"
     }
 }
 
@@ -178,22 +145,6 @@ def filter_timestamps(timestamps):
         if timestamp < filter_start or timestamp:
             continue
         yield timestamp
-
-
-def filter_recent_timestamps(timestamps):
-    """Filter timestamps to only include those from the past 6 months."""
-    # Make filter_start timezone-aware for comparison
-    uk_timezone = pytz.timezone("Europe/London")
-    filter_start_aware = uk_timezone.localize(filter_start)
-
-    for timestamp in timestamps:
-        if timestamp >= filter_start_aware:
-            yield timestamp
-
-
-def count_recent_timestamps(timestamps):
-    """Count timestamps from the past 6 months."""
-    return len(list(filter_recent_timestamps(timestamps)))
 
 
 def get_count_by_date_key(timestamps, key_func):
@@ -299,22 +250,6 @@ def count_messages(zipfile):
     return counts
 
 
-def count_recent_messages(zipfile):
-    """Count messages sent and received in the past 6 months."""
-    uk_timezone = pytz.timezone("Europe/London")
-    filter_start_aware = uk_timezone.localize(filter_start)
-
-    counts = {"sent": 0, "received": 0}
-    for data in glob_json(zipfile, "*/messages/inbox/**/message_*.json"):
-        donating_user = get_donating_user(data)
-        for message in data["messages"]:
-            timestamp = parse_datetime(message["timestamp_ms"] / 1000)
-            if timestamp >= filter_start_aware:
-                key = "sent" if message["sender_name"] == donating_user else "received"
-                counts[key] += 1
-    return counts
-
-
 def get_donating_user(data):
     participants = data["participants"]
     return participants[len(participants) - 1]["name"]
@@ -322,13 +257,6 @@ def get_donating_user(data):
 
 def extract_summary_data(zipfile, locale="en"):
     message_counts = count_messages(zipfile)
-    recent_message_counts = count_recent_messages(zipfile)
-
-    # Calculate recent counts (past 6 months)
-    posts_recent = count_recent_timestamps(get_video_posts_timestamps(zipfile))
-    stories_recent = count_recent_timestamps(stories_timestamps(zipfile))
-    comments_recent = count_recent_timestamps(get_post_comments_timestamps(zipfile))
-
     summary_data = {
         "Description": [
             get_translated_text("followers", locale),
@@ -339,12 +267,6 @@ def extract_summary_data(zipfile, locale="en"):
             get_translated_text("messages_sent", locale),
             get_translated_text("messages_received", locale),
             get_translated_text("ads_viewed", locale),
-            # Recent activity (past 6 months)
-            get_translated_text("posts_published_recent", locale),
-            get_translated_text("stories_published_recent", locale),
-            get_translated_text("comments_published_recent", locale),
-            get_translated_text("messages_sent_recent", locale),
-            get_translated_text("messages_received_recent", locale),
         ],
         "Number": [
             count_items(
@@ -367,12 +289,6 @@ def extract_summary_data(zipfile, locale="en"):
                 "*/ads_and_topics/ads_viewed.json",
                 "impressions_history_ads_seen",
             ),
-            # Recent activity (past 6 months)
-            posts_recent,
-            stories_recent,
-            comments_recent,
-            recent_message_counts["sent"],
-            recent_message_counts["received"],
         ],
     }
 
@@ -421,10 +337,7 @@ def extract_summary_data(zipfile, locale="en"):
     )
 
 
-def extract_direct_message_activity(zipfile, meta_data=None):
-    if meta_data is None:
-        meta_data = []
-
+def extract_direct_message_activity(zipfile):
     counter = itertools.count()
     person_ids = defaultdict(lambda: next(counter))
     sender_ids = []
@@ -440,11 +353,6 @@ def extract_direct_message_activity(zipfile, meta_data=None):
     df["Sent"] = pd.to_datetime(df["Sent"]).dt.strftime("%Y-%m-%d %H:%M")
     # Sort by sent time (newest first)
     df = df.sort_values(by=["Sent"], ascending=False).reset_index(drop=True)
-
-    # Limit to MAX_TABLE_ROWS
-    if len(df) > MAX_TABLE_ROWS:
-        meta_data.append(("info", f"Direct message activity: Limited to {MAX_TABLE_ROWS} most recent items (out of {len(df)} total)"))
-        df = df.head(MAX_TABLE_ROWS)
 
     description = props.Translatable(
         {
@@ -542,11 +450,11 @@ def get_media_creation_timestamps(items):
 
 
 def get_content_posts_timestamps(zipfile):
-    # Path: */content/posts_*.json
+    # Old format
     for data in glob_json(zipfile, "*/content/posts_*.json"):
 
         yield from get_media_creation_timestamps(data)
-    # Path: your_instagram_activity/media/posts_*.json
+    # New format
     for data in glob_json(zipfile, "your_instagram_activity/media/posts_*.json"):
         for post in data:
             for media in post["media"]:
@@ -569,12 +477,12 @@ def df_from_timestamps(timestamps, column):
 
 
 def stories_timestamps(zipfile):
-    # Path: */content/stories.json
+    # Old format
     for data in glob_json(zipfile, "*/content/stories.json"):
         for item in data["ig_stories"]:
             yield parse_datetime(item["creation_timestamp"])
 
-    # Path: your_instagram_activity/media/stories.json
+    # New format
     for data in glob_json(zipfile, "your_instagram_activity/media/stories.json"):
         for item in data["ig_stories"]:
             yield parse_datetime(item["creation_timestamp"])
@@ -615,19 +523,11 @@ def get_video_posts_timestamps(zipfile):
     )
 
 
-def extract_video_posts(zipfile, meta_data=None):
-    if meta_data is None:
-        meta_data = []
-
+def extract_video_posts(zipfile):
     video_timestamps = get_video_posts_timestamps(zipfile)
     df = df_from_timestamp_columns(
         (video_timestamps, "Videos"), (stories_timestamps(zipfile), "Stories")
     )
-
-    # Limit to MAX_TABLE_ROWS
-    if len(df) > MAX_TABLE_ROWS:
-        meta_data.append(("info", f"Posts: Limited to {MAX_TABLE_ROWS} most recent items (out of {len(df)} total)"))
-        df = df.head(MAX_TABLE_ROWS)
 
     description = props.Translatable(
         {
@@ -740,23 +640,13 @@ def get_post_comments_timestamps(zipfile):
 
 def get_string_map_timestamps(zipfile, pattern, key=None):
     for data in glob_json(zipfile, pattern):
-        # Handle both nested format (dict with wrapper key) and flat format (list at top level)
-        if key is not None and isinstance(data, dict) and key in data:
+        if key is not None:
             data = data[key]
         if isinstance(data, list):
             for item in data:
-                # Flat format: timestamp directly on item
-                if "timestamp" in item:
-                    yield parse_datetime(item["timestamp"])
-                # Nested format: in string_map_data.Time.timestamp
-                elif "string_map_data" in item:
-                    yield parse_datetime(item["string_map_data"]["Time"]["timestamp"])
+                yield parse_datetime(item["string_map_data"]["Time"]["timestamp"])
         else:
-            # Nested format: single object with string_map_data
-            if "string_map_data" in data:
-                yield parse_datetime(data["string_map_data"]["Time"]["timestamp"])
-            elif "timestamp" in data:
-                yield parse_datetime(data["timestamp"])
+            yield parse_datetime(data["string_map_data"]["Time"]["timestamp"])
 
 
 
@@ -779,20 +669,12 @@ def get_likes_timestamps(zipfile):
     )
 
 
-def extract_comments_and_likes(zipfile, meta_data=None):
-    if meta_data is None:
-        meta_data = []
-
+def extract_comments_and_likes(zipfile):
     comment_timestamps = get_post_comments_timestamps(zipfile)
     likes_timestamps = get_likes_timestamps(zipfile)
     df = df_from_timestamp_columns(
         (comment_timestamps, "Comments"), (likes_timestamps, "Likes")
     )
-
-    # Limit to MAX_TABLE_ROWS
-    if len(df) > MAX_TABLE_ROWS:
-        meta_data.append(("info", f"Comments and likes: Limited to {MAX_TABLE_ROWS} most recent items (out of {len(df)} total)"))
-        df = df.head(MAX_TABLE_ROWS)
 
     description = props.Translatable(
         {
@@ -900,10 +782,7 @@ def extract_comments_and_likes(zipfile, meta_data=None):
     )
 
 
-def extract_viewed(zipfile, meta_data=None):
-    if meta_data is None:
-        meta_data = []
-
+def extract_viewed(zipfile):
     df = df_from_timestamp_columns(
         (
             get_string_map_timestamps(
@@ -922,11 +801,6 @@ def extract_viewed(zipfile, meta_data=None):
             "Posts",
         ),
     )
-
-    # Limit to MAX_TABLE_ROWS
-    if len(df) > MAX_TABLE_ROWS:
-        meta_data.append(("info", f"Viewed: Limited to {MAX_TABLE_ROWS} most recent items (out of {len(df)} total)"))
-        df = df.head(MAX_TABLE_ROWS)
 
     description = props.Translatable(
         {
@@ -1053,10 +927,7 @@ def is_html_format(zipfile):
     return has_html and not has_json_data
 
 
-def extract_data(path, locale="en", meta_data=None):
-    if meta_data is None:
-        meta_data = []
-
+def extract_data(path, locale="en"):
     zfile = zipfile.ZipFile(path)
 
     # Check if this is an HTML format export
@@ -1065,10 +936,10 @@ def extract_data(path, locale="en", meta_data=None):
 
     return [
         extract_summary_data(zfile, locale),
-        extract_video_posts(zfile, meta_data),
-        extract_comments_and_likes(zfile, meta_data),
-        extract_viewed(zfile, meta_data),
-        extract_direct_message_activity(zfile, meta_data),
+        extract_video_posts(zfile),
+        extract_comments_and_likes(zfile),
+        extract_viewed(zfile),
+        extract_direct_message_activity(zfile),
     ]
 
 
@@ -1243,9 +1114,8 @@ class DataDonation:
 data_donation = DataDonation("Instagram", "application/zip", extract_data)
 
 
-def process(data):
-    session_id = data.get("sessionId")
-    locale = data.get("locale", "en")
+def process(session_id):
+    locale = "en"  # Default locale
     yield donate(f"{session_id}-tracking", '[{ "message": "user entered script" }]')
     yield from data_donation(session_id, locale)
 

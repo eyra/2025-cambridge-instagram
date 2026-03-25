@@ -109,6 +109,14 @@ def process(sessionId):
     content = read_asset("my_file.txt")
 ```
 
+### Data Frame Size limits
+
+Row limits for data frames in the Props UI:
+- Consent Table: default maximum of 10,000 rows (configurable)
+- UI hard cap: 50,000 rows (cannot be exceeded)
+
+For larger datasets, pre-aggregate or sample before display, and review your informed consent and privacy guidelines.
+
 ### Adding Dependencies
 
 If you need additional Python packages, add them to `packages/python/pyproject.toml` in the `tool.poetry.dependencies` section.
@@ -253,6 +261,10 @@ When your data donation application is ready for deployment:
    - Any server that can host static files and store the donated data
 
 To use the release in the Next platform, add a "Donate task" and select the generated ZIP file as the "Flow application".
+
+## Important Disclaimer
+
+Please review the [disclaimer](./DISCLAIMER.md) in this repository for important information about technical limitations, logging behavior, and data handling considerations.
 
 ## Funding
 

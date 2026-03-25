@@ -17,6 +17,7 @@ function App() {
             promptFactories: [new HelloWorldFactory()],
           }),
         ]}
+        logLevel={import.meta.env.DEV ? "debug" : "info"}
       />
     </div>
   );

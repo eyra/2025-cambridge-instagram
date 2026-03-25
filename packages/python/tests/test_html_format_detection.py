@@ -4,15 +4,11 @@ import zipfile
 import tempfile
 import os
 import sys
-from unittest.mock import MagicMock
-
-# Mock the js module before importing port modules
-sys.modules['js'] = MagicMock()
 
 # Add the port package to Python path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'port'))
 
-from port.script import is_html_format, extract_data, HtmlFormatError
+from script import is_html_format, extract_data, HtmlFormatError
 
 
 class TestHtmlFormatDetection:
