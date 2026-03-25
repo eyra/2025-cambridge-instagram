@@ -9,6 +9,16 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'port'))
 
 from script import is_html_format, extract_data, HtmlFormatError
+from port.api.commands import FlushLogs
+
+
+def consume_generator(gen):
+    """Consume extract_data generator and return final result."""
+    result = None
+    for item in gen:
+        if item is not FlushLogs:
+            result = item
+    return result
 
 
 class TestHtmlFormatDetection:
@@ -133,7 +143,8 @@ class TestHtmlFormatDetection:
         zip_path = self.create_test_zip_with_files(html_files)
 
         with pytest.raises(HtmlFormatError) as exc_info:
-            extract_data(zip_path)
+            # extract_data is now a generator, must consume it to trigger the error
+            consume_generator(extract_data(zip_path))
 
         assert "HTML format" in str(exc_info.value)
         assert "JSON format is required" in str(exc_info.value)
@@ -181,7 +192,8 @@ class TestHtmlFormatDetection:
 
         # This should not raise an exception
         try:
-            result = extract_data(zip_path)
+            # extract_data is now a generator, consume it to get the result
+            result = consume_generator(extract_data(zip_path))
             # Verify we get the expected structure
             assert isinstance(result, list)
             assert len(result) == 5  # 5 extraction results
