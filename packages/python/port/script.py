@@ -1,4 +1,5 @@
 import itertools
+import logging
 import port.api.props as props
 from port.api.commands import CommandSystemDonate, CommandUIRender
 
@@ -10,6 +11,10 @@ import pytz
 import fnmatch
 from collections import defaultdict, namedtuple
 from contextlib import suppress
+
+# Configure logging for production debugging
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 ##########################
 # Instagram file processing #
@@ -179,12 +184,17 @@ def glob(zipfile, pattern):
 
 
 def glob_json(zipfile, pattern):
-    for name in glob(zipfile, pattern):
+    matching_files = glob(zipfile, pattern)
+    logger.debug(f"glob_json: pattern='{pattern}' found {len(matching_files)} files")
+    for name in matching_files:
+        logger.debug(f"glob_json: processing file '{name}'")
         with zipfile.open(name) as f:
             try:
-                yield json.load(f)
-            except json.JSONDecodeError:
-                print(f"Error decoding JSON from {name}")
+                data = json.load(f)
+                logger.debug(f"glob_json: successfully parsed '{name}'")
+                yield data
+            except json.JSONDecodeError as e:
+                logger.error(f"glob_json: Error decoding JSON from {name}: {e}")
                 raise
 
 # =====================
@@ -241,12 +251,21 @@ def count_stories(zipfile):
     return len(list(stories_timestamps(zipfile)))
 
 def count_messages(zipfile):
+    logger.debug("count_messages: Starting message count")
     counts = {"sent": 0, "received": 0}
+    conversation_count = 0
     for data in glob_json(zipfile, "*/messages/inbox/**/message_*.json"):
-        donating_user = get_donating_user(data)
-        for message in data["messages"]:
-            key = "sent" if message["sender_name"] == donating_user else "received"
-            counts[key] += 1
+        conversation_count += 1
+        try:
+            donating_user = get_donating_user(data)
+            msg_count = len(data.get("messages", []))
+            logger.debug(f"count_messages: Conversation {conversation_count} with user '{donating_user}', {msg_count} messages")
+            for message in data["messages"]:
+                key = "sent" if message.get("sender_name") == donating_user else "received"
+                counts[key] += 1
+        except Exception as e:
+            logger.warning(f"count_messages: Error processing conversation {conversation_count}: {e}")
+    logger.debug(f"count_messages: Processed {conversation_count} conversations, sent={counts['sent']}, received={counts['received']}")
     return counts
 
 
@@ -256,7 +275,36 @@ def get_donating_user(data):
 
 
 def extract_summary_data(zipfile, locale="en"):
+    logger.debug(f"extract_summary_data: Starting with locale='{locale}'")
+
+    logger.debug("extract_summary_data: Counting messages...")
     message_counts = count_messages(zipfile)
+    logger.debug(f"extract_summary_data: Message counts: sent={message_counts['sent']}, received={message_counts['received']}")
+
+    logger.debug("extract_summary_data: Counting followers...")
+    followers_count = count_items(zipfile, "*/followers_and_following/followers_*.json", "string_list_data")
+    logger.debug(f"extract_summary_data: Followers count: {followers_count}")
+
+    logger.debug("extract_summary_data: Counting following...")
+    following_count = count_items(zipfile, "*/followers_and_following/following.json", "relationships_following")
+    logger.debug(f"extract_summary_data: Following count: {following_count}")
+
+    logger.debug("extract_summary_data: Counting posts...")
+    posts_count = count_posts(zipfile)
+    logger.debug(f"extract_summary_data: Posts count: {posts_count}")
+
+    logger.debug("extract_summary_data: Counting stories...")
+    stories_count = count_stories(zipfile)
+    logger.debug(f"extract_summary_data: Stories count: {stories_count}")
+
+    logger.debug("extract_summary_data: Counting comments...")
+    comments_count = count_items(zipfile, "*/comments/post_comments_*.json")
+    logger.debug(f"extract_summary_data: Comments count: {comments_count}")
+
+    logger.debug("extract_summary_data: Counting ads viewed...")
+    ads_count = count_items(zipfile, "*/ads_and_topics/ads_viewed.json", "impressions_history_ads_seen")
+    logger.debug(f"extract_summary_data: Ads viewed count: {ads_count}")
+
     summary_data = {
         "Description": [
             get_translated_text("followers", locale),
@@ -269,28 +317,17 @@ def extract_summary_data(zipfile, locale="en"):
             get_translated_text("ads_viewed", locale),
         ],
         "Number": [
-            count_items(
-                zipfile,
-                "*/followers_and_following/followers_*.json",
-                "string_list_data",
-            ),
-            count_items(
-                zipfile,
-                "*/followers_and_following/following.json",
-                "relationships_following",
-            ),
-            count_posts(zipfile),
-            count_stories(zipfile),
-            count_items(zipfile, "*/comments/post_comments_*.json"),
+            followers_count,
+            following_count,
+            posts_count,
+            stories_count,
+            comments_count,
             message_counts["sent"],
             message_counts["received"],
-            count_items(
-                zipfile,
-                "*/ads_and_topics/ads_viewed.json",
-                "impressions_history_ads_seen",
-            ),
+            ads_count,
         ],
     }
+    logger.info(f"extract_summary_data: Summary complete - followers={followers_count}, following={following_count}, posts={posts_count}, stories={stories_count}, comments={comments_count}, msgs_sent={message_counts['sent']}, msgs_recv={message_counts['received']}, ads={ads_count}")
 
     description = props.Translatable(
         {
@@ -338,21 +375,39 @@ def extract_summary_data(zipfile, locale="en"):
 
 
 def extract_direct_message_activity(zipfile):
+    logger.debug("extract_direct_message_activity: Starting extraction")
     counter = itertools.count()
     person_ids = defaultdict(lambda: next(counter))
     sender_ids = []
     timestamps = []
+    conversation_count = 0
+    message_count = 0
+
     for data in glob_json(zipfile, "*/messages/inbox/**/message_*.json"):
-        # Ensure the donating user is the first to get an ID
-        donating_user = get_donating_user(data)
-        person_ids[donating_user]
-        for message in data["messages"]:
-            sender_ids.append(person_ids[message["sender_name"]])
-            timestamps.append(parse_datetime(message["timestamp_ms"] / 1000))
+        conversation_count += 1
+        try:
+            # Ensure the donating user is the first to get an ID
+            donating_user = get_donating_user(data)
+            person_ids[donating_user]
+            conv_messages = data.get("messages", [])
+            logger.debug(f"extract_direct_message_activity: Conversation {conversation_count}, {len(conv_messages)} messages")
+            for message in conv_messages:
+                try:
+                    sender_ids.append(person_ids[message["sender_name"]])
+                    timestamps.append(parse_datetime(message["timestamp_ms"] / 1000))
+                    message_count += 1
+                except Exception as e:
+                    logger.warning(f"extract_direct_message_activity: Error processing message: {e}")
+        except Exception as e:
+            logger.warning(f"extract_direct_message_activity: Error processing conversation {conversation_count}: {e}")
+
+    logger.info(f"extract_direct_message_activity: Processed {conversation_count} conversations, {message_count} messages total")
+
     df = pd.DataFrame({"Anonymous ID": sender_ids, "Sent": timestamps})
     df["Sent"] = pd.to_datetime(df["Sent"]).dt.strftime("%Y-%m-%d %H:%M")
     # Sort by sent time (newest first)
     df = df.sort_values(by=["Sent"], ascending=False).reset_index(drop=True)
+    logger.debug(f"extract_direct_message_activity: DataFrame created with {len(df)} rows")
 
     description = props.Translatable(
         {
@@ -524,10 +579,21 @@ def get_video_posts_timestamps(zipfile):
 
 
 def extract_video_posts(zipfile):
-    video_timestamps = get_video_posts_timestamps(zipfile)
+    logger.debug("extract_video_posts: Starting extraction")
+    logger.debug("extract_video_posts: Getting video timestamps...")
+    video_timestamps = list(get_video_posts_timestamps(zipfile))
+    logger.debug(f"extract_video_posts: Found {len(video_timestamps)} video timestamps")
+
+    logger.debug("extract_video_posts: Getting stories timestamps...")
+    story_timestamps = list(stories_timestamps(zipfile))
+    logger.debug(f"extract_video_posts: Found {len(story_timestamps)} story timestamps")
+
+    logger.info(f"extract_video_posts: Total videos={len(video_timestamps)}, stories={len(story_timestamps)}")
+
     df = df_from_timestamp_columns(
-        (video_timestamps, "Videos"), (stories_timestamps(zipfile), "Stories")
+        (iter(video_timestamps), "Videos"), (iter(story_timestamps), "Stories")
     )
+    logger.debug(f"extract_video_posts: DataFrame created with {len(df)} rows")
 
     description = props.Translatable(
         {
@@ -670,11 +736,22 @@ def get_likes_timestamps(zipfile):
 
 
 def extract_comments_and_likes(zipfile):
-    comment_timestamps = get_post_comments_timestamps(zipfile)
-    likes_timestamps = get_likes_timestamps(zipfile)
+    logger.debug("extract_comments_and_likes: Starting extraction")
+
+    logger.debug("extract_comments_and_likes: Getting comment timestamps...")
+    comment_timestamps = list(get_post_comments_timestamps(zipfile))
+    logger.debug(f"extract_comments_and_likes: Found {len(comment_timestamps)} comment timestamps")
+
+    logger.debug("extract_comments_and_likes: Getting likes timestamps...")
+    likes_timestamps = list(get_likes_timestamps(zipfile))
+    logger.debug(f"extract_comments_and_likes: Found {len(likes_timestamps)} likes timestamps")
+
+    logger.info(f"extract_comments_and_likes: Total comments={len(comment_timestamps)}, likes={len(likes_timestamps)}")
+
     df = df_from_timestamp_columns(
-        (comment_timestamps, "Comments"), (likes_timestamps, "Likes")
+        (iter(comment_timestamps), "Comments"), (iter(likes_timestamps), "Likes")
     )
+    logger.debug(f"extract_comments_and_likes: DataFrame created with {len(df)} rows")
 
     description = props.Translatable(
         {
@@ -783,24 +860,31 @@ def extract_comments_and_likes(zipfile):
 
 
 def extract_viewed(zipfile):
+    logger.debug("extract_viewed: Starting extraction")
+
+    logger.debug("extract_viewed: Getting videos watched timestamps...")
+    videos_watched = list(get_string_map_timestamps(
+        zipfile,
+        "*/ads_and_topics/videos_watched.json",
+        "impressions_history_videos_watched",
+    ))
+    logger.debug(f"extract_viewed: Found {len(videos_watched)} videos watched timestamps")
+
+    logger.debug("extract_viewed: Getting posts viewed timestamps...")
+    posts_viewed = list(get_string_map_timestamps(
+        zipfile,
+        "*/ads_and_topics/posts_viewed.json",
+        "impressions_history_posts_seen",
+    ))
+    logger.debug(f"extract_viewed: Found {len(posts_viewed)} posts viewed timestamps")
+
+    logger.info(f"extract_viewed: Total videos_watched={len(videos_watched)}, posts_viewed={len(posts_viewed)}")
+
     df = df_from_timestamp_columns(
-        (
-            get_string_map_timestamps(
-                zipfile,
-                "*/ads_and_topics/videos_watched.json",
-                "impressions_history_videos_watched",
-            ),
-            "Videos",
-        ),
-        (
-            get_string_map_timestamps(
-                zipfile,
-                "*/ads_and_topics/posts_viewed.json",
-                "impressions_history_posts_seen",
-            ),
-            "Posts",
-        ),
+        (iter(videos_watched), "Videos"),
+        (iter(posts_viewed), "Posts"),
     )
+    logger.debug(f"extract_viewed: DataFrame created with {len(df)} rows")
 
     description = props.Translatable(
         {
@@ -928,19 +1012,68 @@ def is_html_format(zipfile):
 
 
 def extract_data(path, locale="en"):
-    zfile = zipfile.ZipFile(path)
+    logger.info(f"extract_data: Starting extraction with locale='{locale}'")
+    logger.debug(f"extract_data: Opening zip file from path type={type(path)}")
+
+    try:
+        zfile = zipfile.ZipFile(path)
+        logger.info(f"extract_data: Zip file opened, contains {len(zfile.namelist())} files")
+        logger.debug(f"extract_data: Files in zip: {zfile.namelist()[:20]}...")  # First 20 files
+    except Exception as e:
+        logger.error(f"extract_data: Failed to open zip file: {e}")
+        raise
 
     # Check if this is an HTML format export
+    logger.debug("extract_data: Checking for HTML format")
     if is_html_format(zfile):
+        logger.error("extract_data: HTML format detected, raising error")
         raise HtmlFormatError("Instagram data export is in HTML format, JSON format is required")
 
-    return [
-        extract_summary_data(zfile, locale),
-        extract_video_posts(zfile),
-        extract_comments_and_likes(zfile),
-        extract_viewed(zfile),
-        extract_direct_message_activity(zfile),
-    ]
+    logger.info("extract_data: Starting data extraction from 5 sources")
+    results = []
+
+    logger.debug("extract_data: Extracting summary data...")
+    try:
+        results.append(extract_summary_data(zfile, locale))
+        logger.info("extract_data: Summary data extracted successfully")
+    except Exception as e:
+        logger.error(f"extract_data: Failed to extract summary data: {e}", exc_info=True)
+        raise
+
+    logger.debug("extract_data: Extracting video posts...")
+    try:
+        results.append(extract_video_posts(zfile))
+        logger.info("extract_data: Video posts extracted successfully")
+    except Exception as e:
+        logger.error(f"extract_data: Failed to extract video posts: {e}", exc_info=True)
+        raise
+
+    logger.debug("extract_data: Extracting comments and likes...")
+    try:
+        results.append(extract_comments_and_likes(zfile))
+        logger.info("extract_data: Comments and likes extracted successfully")
+    except Exception as e:
+        logger.error(f"extract_data: Failed to extract comments and likes: {e}", exc_info=True)
+        raise
+
+    logger.debug("extract_data: Extracting viewed content...")
+    try:
+        results.append(extract_viewed(zfile))
+        logger.info("extract_data: Viewed content extracted successfully")
+    except Exception as e:
+        logger.error(f"extract_data: Failed to extract viewed content: {e}", exc_info=True)
+        raise
+
+    logger.debug("extract_data: Extracting direct message activity...")
+    try:
+        results.append(extract_direct_message_activity(zfile))
+        logger.info("extract_data: Direct message activity extracted successfully")
+    except Exception as e:
+        logger.error(f"extract_data: Failed to extract direct message activity: {e}", exc_info=True)
+        raise
+
+    logger.info(f"extract_data: Extraction complete, returning {len(results)} results")
+    return results
 
 
 ######################
@@ -964,6 +1097,7 @@ class HtmlFormatError(Exception):
 
 class DataDonationProcessor:
     def __init__(self, platform, mime_types, extractor, session_id, locale="en"):
+        logger.info(f"DataDonationProcessor: Initializing for platform='{platform}', session_id='{session_id}', locale='{locale}'")
         self.platform = platform
         self.mime_types = mime_types
         self.extractor = extractor
@@ -973,35 +1107,52 @@ class DataDonationProcessor:
         self.meta_data = []
 
     def process(self):
+        logger.info(f"DataDonationProcessor.process: Starting donation flow for {self.platform}")
         with suppress(SkipToNextStep):
             while True:
+                logger.debug("DataDonationProcessor.process: Prompting for file...")
                 file_result = yield from self.prompt_file()
+                logger.info(f"DataDonationProcessor.process: File received, type={type(file_result)}")
 
                 self.log(f"extracting file")
+                logger.info("DataDonationProcessor.process: Starting file extraction...")
                 try:
                     extraction_result = self.extract_data(file_result.value)
-                except (IOError, zipfile.BadZipFile):
+                    logger.info(f"DataDonationProcessor.process: Extraction returned {len(extraction_result) if extraction_result else 0} results")
+                except (IOError, zipfile.BadZipFile) as e:
+                    logger.error(f"DataDonationProcessor.process: IOError/BadZipFile: {e}", exc_info=True)
                     self.log(f"prompt confirmation to retry file selection")
                     try_again = yield from self.prompt_retry()
                     if try_again:
+                        logger.info("DataDonationProcessor.process: User chose to retry")
                         continue
+                    logger.info("DataDonationProcessor.process: User declined retry, ending")
                     return
-                except HtmlFormatError:
+                except HtmlFormatError as e:
+                    logger.error(f"DataDonationProcessor.process: HtmlFormatError: {e}")
                     self.log(f"HTML format detected - prompting for retry with instructions")
                     try_again = yield from self.prompt_html_format_retry()
                     if try_again:
+                        logger.info("DataDonationProcessor.process: User chose to retry after HTML format error")
                         continue
+                    logger.info("DataDonationProcessor.process: User declined retry after HTML format, ending")
                     yield donate(f"{self.session_id}-html-format-attempt", '[{ "message": "HTML format upload attempted" }]')
                     return
+                except Exception as e:
+                    logger.error(f"DataDonationProcessor.process: Unexpected error during extraction: {e}", exc_info=True)
+                    raise
                 else:
                     if extraction_result is None:
+                        logger.warning("DataDonationProcessor.process: extraction_result is None")
                         try_again = yield from self.prompt_retry()
                         if try_again:
                             continue
                         else:
                             return
                     self.log(f"extraction successful, go to consent form")
+                    logger.info(f"DataDonationProcessor.process: Extraction successful, showing consent form with {len(extraction_result)} tables")
                     yield from self.prompt_consent(extraction_result)
+                    logger.info("DataDonationProcessor.process: Consent form completed")
                     return
 
     def prompt_retry(self):
@@ -1115,9 +1266,13 @@ data_donation = DataDonation("Instagram", "application/zip", extract_data)
 
 
 def process(session_id):
+    logger.info(f"process: Starting Instagram data donation process, session_id='{session_id}'")
     locale = "en"  # Default locale
+    logger.debug(f"process: Using locale='{locale}'")
     yield donate(f"{session_id}-tracking", '[{ "message": "user entered script" }]')
+    logger.debug("process: Tracking donation sent, starting data donation flow...")
     yield from data_donation(session_id, locale)
+    logger.info("process: Data donation flow completed")
 
 
 def render_donation_page(platform, body):
