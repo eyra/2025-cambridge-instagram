@@ -1,7 +1,7 @@
 import itertools
 import logging
 import port.api.props as props
-from port.api.commands import CommandSystemDonate, CommandUIRender
+from port.api.commands import CommandSystemDonate, CommandUIRender, FlushLogs
 
 import pandas as pd
 import zipfile
@@ -1012,8 +1012,10 @@ def is_html_format(zipfile):
 
 
 def extract_data(path, locale="en"):
+    """Generator that extracts data and yields FlushLogs to send logs incrementally."""
     logger.info(f"extract_data: Starting extraction with locale='{locale}'")
     logger.debug(f"extract_data: Opening zip file from path type={type(path)}")
+    yield FlushLogs
 
     try:
         zfile = zipfile.ZipFile(path)
@@ -1030,12 +1032,14 @@ def extract_data(path, locale="en"):
         raise HtmlFormatError("Instagram data export is in HTML format, JSON format is required")
 
     logger.info("extract_data: Starting data extraction from 5 sources")
+    yield FlushLogs
     results = []
 
     logger.debug("extract_data: Extracting summary data...")
     try:
         results.append(extract_summary_data(zfile, locale))
         logger.info("extract_data: Summary data extracted successfully")
+        yield FlushLogs
     except Exception as e:
         logger.error(f"extract_data: Failed to extract summary data: {e}", exc_info=True)
         raise
@@ -1044,6 +1048,7 @@ def extract_data(path, locale="en"):
     try:
         results.append(extract_video_posts(zfile))
         logger.info("extract_data: Video posts extracted successfully")
+        yield FlushLogs
     except Exception as e:
         logger.error(f"extract_data: Failed to extract video posts: {e}", exc_info=True)
         raise
@@ -1052,6 +1057,7 @@ def extract_data(path, locale="en"):
     try:
         results.append(extract_comments_and_likes(zfile))
         logger.info("extract_data: Comments and likes extracted successfully")
+        yield FlushLogs
     except Exception as e:
         logger.error(f"extract_data: Failed to extract comments and likes: {e}", exc_info=True)
         raise
@@ -1060,6 +1066,7 @@ def extract_data(path, locale="en"):
     try:
         results.append(extract_viewed(zfile))
         logger.info("extract_data: Viewed content extracted successfully")
+        yield FlushLogs
     except Exception as e:
         logger.error(f"extract_data: Failed to extract viewed content: {e}", exc_info=True)
         raise
@@ -1068,12 +1075,13 @@ def extract_data(path, locale="en"):
     try:
         results.append(extract_direct_message_activity(zfile))
         logger.info("extract_data: Direct message activity extracted successfully")
+        yield FlushLogs
     except Exception as e:
         logger.error(f"extract_data: Failed to extract direct message activity: {e}", exc_info=True)
         raise
 
     logger.info(f"extract_data: Extraction complete, returning {len(results)} results")
-    return results
+    yield results
 
 
 ######################
@@ -1117,7 +1125,7 @@ class DataDonationProcessor:
                 self.log(f"extracting file")
                 logger.info("DataDonationProcessor.process: Starting file extraction...")
                 try:
-                    extraction_result = self.extract_data(file_result.value)
+                    extraction_result = yield from self.extract_data(file_result.value)
                     logger.info(f"DataDonationProcessor.process: Extraction returned {len(extraction_result) if extraction_result else 0} results")
                 except (IOError, zipfile.BadZipFile) as e:
                     logger.error(f"DataDonationProcessor.process: IOError/BadZipFile: {e}", exc_info=True)
@@ -1187,7 +1195,14 @@ class DataDonationProcessor:
         self.meta_data.append(("debug", f"{self.platform}: {message}"))
 
     def extract_data(self, file):
-        return self.extractor(file, self.locale)
+        """Run extractor generator, forwarding FlushLogs and returning final result."""
+        result = None
+        for item in self.extractor(file, self.locale):
+            if item is FlushLogs:
+                yield FlushLogs
+            else:
+                result = item
+        return result
 
     def prompt_consent(self, data):
         log_title = props.Translatable(
@@ -1382,6 +1397,11 @@ if __name__ == "__main__":
     import sys
 
     if len(sys.argv) > 1:
-        print(extract_data(sys.argv[1]))
+        # extract_data is now a generator, consume it to get results
+        result = None
+        for item in extract_data(sys.argv[1]):
+            if item is not FlushLogs:
+                result = item
+        print(result)
     else:
         print("please provide a zip file as argument")
