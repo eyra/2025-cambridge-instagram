@@ -1,40 +1,27 @@
 import { CommandHandler } from '../types/modules'
 import { CommandSystemEvent, isCommand, Response } from '../types/commands'
-import { Logger } from '../logging'
 
-export default class WorkerProcessingEngine {
+export default class WorkerProcessingEngine  {
   sessionId: String
+  locale: String
   worker: Worker
   commandHandler: CommandHandler
-  logger?: Logger
 
   resolveInitialized!: () => void
   resolveContinue!: () => void
 
-  constructor (
-    sessionId: string,
-    worker: Worker,
-    commandHandler: CommandHandler,
-    logger?: Logger
-  ) {
+  constructor (sessionId: string, locale: string, worker: Worker, commandHandler: CommandHandler) {
     this.sessionId = sessionId
+    this.locale = locale
     this.commandHandler = commandHandler
     this.worker = worker
-    this.logger = logger
-    this.initWorkerEventHandlers()
-  }
-
-  private initWorkerEventHandlers (): void {
+    this.worker.onerror = console.log
     this.worker.onmessage = (event) => {
-      this.logger?.log('debug', `Received event from worker: ${event.data.eventType}`)
+      console.log(
+        '[WorkerProcessingEngine] Received event from worker: ',
+        event.data.eventType
+      )
       this.handleEvent(event)
-    }
-    this.worker.onerror = (error) => {
-      this.logger?.log('error', `Worker error: ${error.message}`, {
-        filename: error.filename,
-        lineno: error.lineno,
-        colno: error.colno,
-      })
     }
   }
 
@@ -48,29 +35,27 @@ export default class WorkerProcessingEngine {
 
   handleEvent (event: any): void {
     const { eventType } = event.data
+    console.log('[ReactEngine] received eventType: ', eventType)
     switch (eventType) {
       case 'initialiseDone':
-        this.logger?.log('debug', 'Worker initialisation done')
+        console.log('[ReactEngine] received: initialiseDone')
         this.resolveInitialized()
         break
 
       case 'runCycleDone':
-        this.logger?.log('debug', 'Worker run cycle done')
+        console.log('[ReactEngine] received: event', event.data.scriptEvent)
         this.handleRunCycle(event.data.scriptEvent)
         break
-
-      case 'error':
-        this.logger?.log('error', `Python error: ${event.data.error}`, { stack: event.data.stack })
-        break
-
       default:
-        this.logger?.log('warn', `Received unsupported worker event: ${eventType}`)
+        console.log(
+          '[ReactEngine] received unsupported flow event: ',
+          eventType
+        )
     }
-    this.logger?.flush()
   }
 
   start (): void {
-    this.logger?.log('debug', 'Worker started')
+    console.log('[WorkerProcessingEngine] started')
     const waitForInitialization: Promise<void> = this.waitForInitialization()
 
     waitForInitialization.then(
@@ -85,16 +70,23 @@ export default class WorkerProcessingEngine {
   async waitForInitialization (): Promise<void> {
     return await new Promise<void>((resolve) => {
       this.resolveInitialized = resolve
-      this.logger?.log('debug', 'Waiting for worker initialisation')
+      console.debug('[WorkerProcessingEngine] waiting for initialisation')
       this.worker.postMessage({ eventType: 'initialise' })
     })
   }
 
   firstRunCycle (): void {
-    this.worker.postMessage({ eventType: 'firstRunCycle', sessionId: this.sessionId })
+    this.worker.postMessage({
+      eventType: 'firstRunCycle',
+      data: {
+        sessionId: this.sessionId,
+        locale: this.locale
+      }
+    })
   }
 
   nextRunCycle (response: Response): void {
+    console.log('[WorkerProcessingEngine] nextRunCycle');
     this.worker.postMessage({ eventType: 'nextRunCycle', response })
   }
 
