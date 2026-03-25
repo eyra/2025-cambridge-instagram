@@ -1,53 +1,44 @@
 import logging
+from collections import deque
 from collections.abc import Generator
 from port.script import process
 from port.api.commands import CommandSystemExit
 from port.api.file_utils import AsyncFileAdapter
-
-# Configure logging for production debugging
-# In Pyodide, this will output to the browser console
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-logger = logging.getLogger(__name__)
+from port.api.logging import LogForwardingHandler
 
 
 class ScriptWrapper(Generator):
     def __init__(self, script):
-        logger.debug("ScriptWrapper: Initialized")
         self.script = script
+        self.queue = deque()
+
+    def add_log_handler(self, logger_name="port.script"):
+        """Attach a handler to the named logger that forwards log records as CommandSystemLog commands."""
+        logger = logging.getLogger(logger_name)
+        logger.setLevel(logging.DEBUG)
+        logger.addHandler(LogForwardingHandler(self.queue))
 
     def send(self, data):
-        logger.debug(f"ScriptWrapper.send: Received data type={type(data).__name__}")
-        # Automatically wrap JS file readers with AsyncFileAdapter
-        if data and getattr(data, '__type__', None) == "PayloadFile":
-            logger.debug("ScriptWrapper.send: Wrapping PayloadFile with AsyncFileAdapter")
-            data.value = AsyncFileAdapter(data.value)
+        if not self.queue:
+            if data and getattr(data, '__type__') == "PayloadFile":
+                data.value = AsyncFileAdapter(data.value)
+            try:
+                command = self.script.send(data)
+            except StopIteration:
+                return CommandSystemExit(0, "End of script").toDict()
+            self.queue.append(command.toDict())
 
-        try:
-            command = self.script.send(data)
-            logger.debug(f"ScriptWrapper.send: Script returned command type={type(command).__name__}")
-        except StopIteration:
-            logger.info("ScriptWrapper.send: Script completed (StopIteration)")
-            return CommandSystemExit(0, "End of script").toDict()
-        except Exception as e:
-            logger.error(f"ScriptWrapper.send: Script error: {e}", exc_info=True)
-            raise
-        else:
-            return command.toDict()
+        return self.queue.popleft()
 
     def throw(self, type=None, value=None, traceback=None):
-        logger.debug("ScriptWrapper.throw: Called")
         raise StopIteration
 
 
-def start(data):
-    logger.info(f"start: Beginning script execution with data={data}")
-    script = process(data)
-    logger.debug("start: Script generator created, returning wrapper")
-    return ScriptWrapper(script)
+def start(sessionId):
+    script = process(sessionId)
+    wrapper = ScriptWrapper(script)
+    wrapper.add_log_handler()
+    return wrapper
 
 if __name__ == "__main__":
     from port.helpers import main
