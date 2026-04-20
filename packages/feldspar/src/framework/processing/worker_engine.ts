@@ -1,5 +1,5 @@
 import { CommandHandler } from '../types/modules'
-import { CommandSystemEvent, isCommand, Response } from '../types/commands'
+import { CommandSystemEvent, CommandSystemLog, isCommand, Response } from '../types/commands'
 
 export default class WorkerProcessingEngine  {
   sessionId: String
@@ -46,12 +46,44 @@ export default class WorkerProcessingEngine  {
         console.log('[ReactEngine] received: event', event.data.scriptEvent)
         this.handleRunCycle(event.data.scriptEvent)
         break
+
+      case 'error':
+        console.error(
+          '[ReactEngine] worker error:',
+          event.data.error,
+          event.data.stack
+        )
+        this.handleWorkerError(event.data.error, event.data.stack)
+        break
+
+      case 'workerLog':
+        this.forwardWorkerLog(event.data.level, event.data.message)
+        break
+
       default:
         console.log(
           '[ReactEngine] received unsupported flow event: ',
           eventType
         )
     }
+  }
+
+  handleWorkerError (error: string, stack: string): void {
+    const message = `[Worker] Error in runCycle: ${error}${stack ? `\n${stack}` : ''}`
+    this.forwardWorkerLog('error', message)
+  }
+
+  forwardWorkerLog (level: string, message: string): void {
+    const command: CommandSystemLog = {
+      __type__: 'CommandSystemLog',
+      level,
+      message,
+      json_string: JSON.stringify({ level, message })
+    }
+    this.commandHandler.onCommand(command).then(
+      () => {},
+      () => {}
+    )
   }
 
   start (): void {
