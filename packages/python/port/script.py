@@ -101,6 +101,22 @@ def parse_datetime(value):
     return uk_timezone.normalize(utc_datetime.astimezone(uk_timezone))
 
 
+def get_timestamp(data, *key_path):
+    """Navigate a nested dict path, then parse the leaf value as a timestamp.
+
+    Returns None if any intermediate key is missing, the final value is
+    None, or it isn't a parseable Unix timestamp. Used by the extraction
+    helpers so a malformed record is skipped rather than raising.
+    """
+    value = get_in(data, *key_path) if key_path else data
+    if value is None:
+        return None
+    try:
+        return parse_datetime(value)
+    except (TypeError, ValueError, OSError, OverflowError):
+        return None
+
+
 def get_in(data_dict, *key_path):
     for k in key_path:
         data_dict = data_dict.get(k, None)
@@ -237,10 +253,14 @@ def count_items(zipfile, pattern, key=None):
         if isinstance(data, dict):
             data = [data]
         for item in data:
+            if not isinstance(item, (dict, list, str)):
+                continue
             if key is None:
                 count += len(item)
             else:
-                count += len(item[key])
+                value = item.get(key) if isinstance(item, dict) else None
+                if value is not None:
+                    count += len(value)
     return count
 
 
@@ -256,22 +276,29 @@ def count_messages(zipfile):
     conversation_count = 0
     for data in glob_json(zipfile, "*/messages/inbox/**/message_*.json"):
         conversation_count += 1
-        try:
-            donating_user = get_donating_user(data)
-            msg_count = len(data.get("messages", []))
-            logger.debug(f"count_messages: Conversation {conversation_count} with user '{donating_user}', {msg_count} messages")
-            for message in data["messages"]:
-                key = "sent" if message.get("sender_name") == donating_user else "received"
-                counts[key] += 1
-        except Exception as e:
-            logger.warning(f"count_messages: Error processing conversation {conversation_count}: {e}")
+        donating_user = get_donating_user(data)
+        if donating_user is None:
+            logger.debug(f"count_messages: Conversation {conversation_count} has no identifiable donating user, skipping")
+            continue
+        messages = get_in(data, "messages") or []
+        logger.debug(f"count_messages: Conversation {conversation_count} with user '{donating_user}', {len(messages)} messages")
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            key = "sent" if message.get("sender_name") == donating_user else "received"
+            counts[key] += 1
     logger.debug(f"count_messages: Processed {conversation_count} conversations, sent={counts['sent']}, received={counts['received']}")
     return counts
 
 
 def get_donating_user(data):
-    participants = data["participants"]
-    return participants[len(participants) - 1]["name"]
+    participants = data.get("participants") if isinstance(data, dict) else None
+    if not participants:
+        return None
+    last = participants[-1]
+    if not isinstance(last, dict):
+        return None
+    return last.get("name")
 
 
 def extract_summary_data(zipfile, locale="en"):
@@ -490,14 +517,17 @@ def extract_direct_message_activity(zipfile):
 def flatten_media(media):
     if isinstance(media, list):
         for item in media:
-            yield from item["media"]
+            if isinstance(item, dict) and isinstance(item.get("media"), list):
+                yield from item["media"]
     else:
         yield media
 
 
 def get_creation_timestamps(items):
     for item in items:
-        yield parse_datetime(item["creation_timestamp"])
+        ts = get_timestamp(item, "creation_timestamp")
+        if ts is not None:
+            yield ts
 
 
 def get_media_creation_timestamps(items):
@@ -509,17 +539,27 @@ def get_content_posts_timestamps(zipfile):
     for data in glob_json(zipfile, "*/content/posts_*.json"):
 
         yield from get_media_creation_timestamps(data)
-    # New format
+    # New format: yield the first media item's timestamp per post
     for data in glob_json(zipfile, "your_instagram_activity/media/posts_*.json"):
+        if not isinstance(data, list):
+            continue
         for post in data:
-            for media in post["media"]:
-                yield parse_datetime(media["creation_timestamp"])
-                break
+            media_list = get_in(post, "media") or []
+            for media in media_list:
+                ts = get_timestamp(media, "creation_timestamp")
+                if ts is not None:
+                    yield ts
+                    break
 
 
 def get_media_timestamps(zipfile, pattern, key):
     for data in glob_json(zipfile, pattern):
-        yield from get_media_creation_timestamps(data[key])
+        if not isinstance(data, dict):
+            continue
+        items = data.get(key)
+        if items is None:
+            continue
+        yield from get_media_creation_timestamps(items)
 
 
 def df_from_timestamps(timestamps, column):
@@ -532,15 +572,18 @@ def df_from_timestamps(timestamps, column):
 
 
 def stories_timestamps(zipfile):
-    # Old format
-    for data in glob_json(zipfile, "*/content/stories.json"):
-        for item in data["ig_stories"]:
-            yield parse_datetime(item["creation_timestamp"])
-
-    # New format
-    for data in glob_json(zipfile, "your_instagram_activity/media/stories.json"):
-        for item in data["ig_stories"]:
-            yield parse_datetime(item["creation_timestamp"])
+    patterns = (
+        "*/content/stories.json",
+        "your_instagram_activity/media/stories.json",
+    )
+    for pattern in patterns:
+        for data in glob_json(zipfile, pattern):
+            if not isinstance(data, dict):
+                continue
+            stories = data.get("ig_stories")
+            if not isinstance(stories, list):
+                continue
+            yield from get_creation_timestamps(stories)
             
 
 def df_from_timestamp_columns(a, b):
@@ -707,21 +750,32 @@ def get_post_comments_timestamps(zipfile):
 def get_string_map_timestamps(zipfile, pattern, key=None):
     for data in glob_json(zipfile, pattern):
         if key is not None:
-            data = data[key]
-        if isinstance(data, list):
-            for item in data:
-                yield parse_datetime(item["string_map_data"]["Time"]["timestamp"])
-        else:
-            yield parse_datetime(data["string_map_data"]["Time"]["timestamp"])
+            data = get_in(data, key)
+            if data is None:
+                continue
+        items = data if isinstance(data, list) else [data]
+        for item in items:
+            ts = get_timestamp(item, "string_map_data", "Time", "timestamp")
+            if ts is not None:
+                yield ts
 
 
 
 def get_string_list_timestamps(zipfile, pattern, key=None):
     for data in glob_json(zipfile, pattern):
         if key is not None:
-            data = data[key]
+            data = get_in(data, key)
+            if data is None:
+                continue
+        if not isinstance(data, list):
+            continue
         for item in data:
-            yield parse_datetime(item["string_list_data"][0]["timestamp"])
+            entries = get_in(item, "string_list_data") or []
+            if not entries:
+                continue
+            ts = get_timestamp(entries[0], "timestamp")
+            if ts is not None:
+                yield ts
 
 
 def get_likes_timestamps(zipfile):
