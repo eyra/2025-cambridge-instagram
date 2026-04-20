@@ -119,6 +119,8 @@ def get_timestamp(data, *key_path):
 
 def get_in(data_dict, *key_path):
     for k in key_path:
+        if not isinstance(data_dict, dict):
+            return None
         data_dict = data_dict.get(k, None)
         if data_dict is None:
             return None

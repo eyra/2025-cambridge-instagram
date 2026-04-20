@@ -229,6 +229,19 @@ class TestGetStringListTimestampsDefensive:
         finally:
             os.unlink(path)
 
+    def test_top_level_is_list_when_key_expected(self):
+        # Reproduces a production crash: file's top level is a list, but
+        # caller passed a key expecting a dict. get_in must not AttributeError.
+        data = [{"string_list_data": [{"timestamp": 1640995200}]}]
+        path = make_zip({"test/likes/liked_posts.json": data})
+        try:
+            with zipfile.ZipFile(path) as zf:
+                result = list(get_string_list_timestamps(
+                    zf, "*/likes/liked_posts.json", "likes_media_likes"))
+            assert result == []
+        finally:
+            os.unlink(path)
+
 
 # ---------------------------------------------------------------------------
 # flatten_media
