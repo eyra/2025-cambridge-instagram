@@ -100,18 +100,24 @@ def _newer_flat_event(ts):
     return {"timestamp": ts, "media": [], "label_values": []}
 
 
+def _newer_creation_event(ts):
+    """A single content entry in the newer flat shape."""
+    return {"creation_timestamp": ts}
+
+
 def make_newer_format_zip():
     """Create a zip that mirrors the newer Instagram export shape.
 
-    Returns the absolute path to the zip. Callers must unlink it.
+    All source files the extractor reads are represented with their
+    newer shape (top-level list, flat `timestamp` / `creation_timestamp`).
 
-    Contents (all counts are small but non-trivial so tests can assert):
-      - 2 message threads (5 + 3 messages = 8 total messages)
-      - 10 videos_watched entries
-      - 5 posts_viewed entries
-      - 2 ads_viewed entries
-      - 7 liked_posts entries
-      - 3 following + 4 followers (summary counts)
+    Contents:
+      - 2 message threads (5 + 3 = 8 messages)
+      - ads_and_topics: 10 videos_watched, 5 posts_viewed, 2 ads_viewed
+      - likes: 7 liked_posts, 4 liked_comments
+      - content: 6 posts, 4 stories, 2 igtv_videos, 3 reels
+      - 9 post_comments
+      - 3 following + 4 followers
     """
     files = {
         "your_instagram_activity/messages/inbox/conv_a_1111/message_1.json":
@@ -121,6 +127,7 @@ def make_newer_format_zip():
             _newer_message_file(["Bob Test", "Donor User"], message_count=3,
                                 start_offset_hours=10),
 
+        # ads_and_topics — top-level list + flat `timestamp`
         "ads_information/ads_and_topics/videos_watched.json":
             [_newer_flat_event(t) for t in _timestamp_list(10, 100)],
         "ads_information/ads_and_topics/posts_viewed.json":
@@ -128,13 +135,28 @@ def make_newer_format_zip():
         "ads_information/ads_and_topics/ads_viewed.json":
             [_newer_flat_event(t) for t in _timestamp_list(2, 300)],
 
+        # likes — top-level list + flat `timestamp`
         "your_instagram_activity/likes/liked_posts.json":
             [_newer_flat_event(t) for t in _timestamp_list(7, 400)],
+        "your_instagram_activity/likes/liked_comments.json":
+            [_newer_flat_event(t) for t in _timestamp_list(4, 500)],
 
-        # Summary inputs — followers/following are still counted, so we
-        # need something the existing counter understands. The newer
-        # shape for these has not been observed yet; using legacy shape
-        # here until a participant zip clarifies it.
+        # content — top-level list + flat `creation_timestamp`
+        "your_instagram_activity/media/posts_1.json":
+            [_newer_creation_event(t) for t in _timestamp_list(6, 600)],
+        "your_instagram_activity/media/stories.json":
+            [_newer_creation_event(t) for t in _timestamp_list(4, 700)],
+        "your_instagram_activity/media/igtv_videos.json":
+            [_newer_creation_event(t) for t in _timestamp_list(2, 800)],
+        "your_instagram_activity/media/reels.json":
+            [_newer_creation_event(t) for t in _timestamp_list(3, 900)],
+
+        # comments — top-level list + flat `timestamp`
+        "your_instagram_activity/comments/post_comments_1.json":
+            [_newer_flat_event(t) for t in _timestamp_list(9, 1000)],
+
+        # Followers/following — newer shape not yet observed in a real
+        # export; keep the legacy shape here until we have evidence.
         "connections/followers_and_following/followers_1.json": {
             "string_list_data": [
                 {"value": f"follower_{i}"} for i in range(4)
@@ -292,7 +314,7 @@ def write_newer_format_folder(out_dir, scale="realistic", seed=None):
             },
         )
 
-    # Newer-format top-level-list files
+    # ads_and_topics — top-level list + flat `timestamp`
     for name, count in [
         ("videos_watched.json", cfg["videos"]),
         ("posts_viewed.json", cfg["posts"]),
@@ -303,9 +325,36 @@ def write_newer_format_folder(out_dir, scale="realistic", seed=None):
             [_newer_flat_event(t) for t in _random_timestamps(rng, count)],
         )
 
+    # likes — top-level list + flat `timestamp`
     _dump(
         _abspath("your_instagram_activity", "likes", "liked_posts.json"),
         [_newer_flat_event(t) for t in _random_timestamps(rng, cfg["likes"])],
+    )
+    _dump(
+        _abspath("your_instagram_activity", "likes", "liked_comments.json"),
+        [_newer_flat_event(t)
+         for t in _random_timestamps(rng, cfg["liked_comments"])],
+    )
+
+    # content (posts / stories / igtv / reels) — top-level list +
+    # flat `creation_timestamp`. Paths live under the newer
+    # `your_instagram_activity/media/...` location.
+    for name, count in [
+        ("posts_1.json", cfg["content_posts"]),
+        ("stories.json", cfg["stories"]),
+        ("igtv_videos.json", cfg["igtv"]),
+        ("reels.json", cfg["reels"]),
+    ]:
+        _dump(
+            _abspath("your_instagram_activity", "media", name),
+            [{"creation_timestamp": t}
+             for t in _random_timestamps(rng, count)],
+        )
+
+    # comments — top-level list + flat `timestamp`
+    _dump(
+        _abspath("your_instagram_activity", "comments", "post_comments_1.json"),
+        [_newer_flat_event(t) for t in _random_timestamps(rng, cfg["comments"])],
     )
 
     # Followers / following still use the legacy summary shape — the

@@ -1,10 +1,10 @@
-"""End-to-end tests that extract_data handles both export shapes.
+"""End-to-end tests: extract_data handles both export shapes.
 
 Legacy shape: top-level dict with a well-known key (likes_media_likes,
 impressions_history_*, ig_stories, ig_igtv_media, ig_reels_media,
-relationships_following) where each event wraps the timestamp under
-`string_list_data[0].timestamp`, `string_map_data.Time.timestamp`,
-or `media[].creation_timestamp`.
+relationships_following, media[...]) where each event wraps the
+timestamp under `string_list_data[0].timestamp`,
+`string_map_data.Time.timestamp`, or `media[].creation_timestamp`.
 
 Newer shape: top-level list where each event has `timestamp` or
 `creation_timestamp` directly at the root.
@@ -42,9 +42,20 @@ def _summary_row(tables, description):
 
 
 class TestNewerFormatExtraction:
-    """After the shape-detection fix these must all pass."""
+    """Every data table must populate for a newer-shape zip."""
+
+    def test_video_posts_populated(self):
+        # 6 posts + 4 stories + 2 igtv + 3 reels = 15 events; grouped
+        # per hour they collapse into a handful of rows but must be > 0.
+        path = make_newer_format_zip()
+        try:
+            tables = _run(path)
+            assert len(tables["instagram_video_posts"]) > 0
+        finally:
+            os.unlink(path)
 
     def test_comments_and_likes_populated(self):
+        # 9 comments + 7 liked posts + 4 liked comments = 20 events.
         path = make_newer_format_zip()
         try:
             tables = _run(path)
@@ -60,20 +71,26 @@ class TestNewerFormatExtraction:
         finally:
             os.unlink(path)
 
-    def test_summary_ads_viewed_counted(self):
-        path = make_newer_format_zip()
-        try:
-            tables = _run(path)
-            assert _summary_row(tables, "Ads viewed") == 2  # make_newer uses 2
-        finally:
-            os.unlink(path)
-
     def test_dm_activity_still_works(self):
         path = make_newer_format_zip()
         try:
             tables = _run(path)
-            # Newer fixture: 5 + 3 = 8 messages
             assert len(tables["instagram_direct_message_activity"]) == 8
+        finally:
+            os.unlink(path)
+
+    def test_summary_counts_reflect_newer_shape(self):
+        path = make_newer_format_zip()
+        try:
+            tables = _run(path)
+            # count_posts sums posts + igtv + reels (all video content).
+            # Fixture: 6 posts + 2 igtv + 3 reels = 11.
+            assert _summary_row(tables, "Posts published") == 11
+            assert _summary_row(tables, "Stories published") == 4
+            assert _summary_row(tables, "Comments published") == 9
+            assert _summary_row(tables, "Ads viewed") == 2
+            assert _summary_row(tables, "Followers") == 4
+            assert _summary_row(tables, "Following") == 3
         finally:
             os.unlink(path)
 
@@ -86,7 +103,6 @@ class TestLegacyFormatNoRegression:
         try:
             tables = _run(path)
             # make_legacy_format_zip produces these exact counts today.
-            # Any drift means we broke backwards compatibility.
             assert len(tables["instagram_comments_and_likes"]) == 7
             assert len(tables["instagram_viewed"]) == 15
             assert len(tables["instagram_direct_message_activity"]) == 5

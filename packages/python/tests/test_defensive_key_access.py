@@ -250,17 +250,28 @@ class TestGetStringListTimestampsDefensive:
 # ---------------------------------------------------------------------------
 
 class TestFlattenMediaDefensive:
-    def test_list_item_missing_media_key(self):
-        result = list(flatten_media([{"not_media": []}]))
-        assert result == []
+    """flatten_media supports both shapes:
 
-    def test_list_mixed_valid_and_missing(self):
+    - Legacy: each item has a "media" list → yield from that list.
+    - Newer flat: no "media" key → yield the item itself (downstream
+      extract_event_timestamp will read its root-level creation_timestamp).
+    """
+
+    def test_list_item_without_media_yielded_as_is(self):
+        # The item has no "media" key, so it's treated as a flat-shape
+        # post and yielded directly. If it has no recognizable timestamp
+        # downstream, get_creation_timestamps will skip it anyway.
+        result = list(flatten_media([{"not_media": []}]))
+        assert result == [{"not_media": []}]
+
+    def test_list_mixed_nested_and_flat(self):
         result = list(flatten_media([
             {"media": [{"creation_timestamp": 1640995200}]},
-            {"not_media": []},
+            {"creation_timestamp": 1641000000},
             {"media": [{"creation_timestamp": 1641081600}]},
         ]))
-        assert len(result) == 2
+        # Two media entries + one flat entry = 3 items yielded.
+        assert len(result) == 3
 
 
 # ---------------------------------------------------------------------------
