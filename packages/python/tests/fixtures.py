@@ -205,13 +205,19 @@ def make_legacy_format_zip():
 
 _SCALES = {
     "small": dict(conversations=2, messages_per=5, videos=10, posts=5, ads=2,
-                  likes=7, followers=4, following=3),
+                  likes=7, followers=4, following=3,
+                  content_posts=3, stories=3, igtv=1, reels=2,
+                  comments=5, liked_comments=3),
     "realistic": dict(conversations=11, messages_per=(20, 80), videos=800,
                       posts=250, ads=40, likes=40, followers=120,
-                      following=160),
+                      following=160,
+                      content_posts=20, stories=15, igtv=5, reels=10,
+                      comments=50, liked_comments=30),
     "large": dict(conversations=50, messages_per=(50, 400), videos=5000,
                   posts=1500, ads=300, likes=400, followers=1200,
-                  following=1500),
+                  following=1500,
+                  content_posts=200, stories=150, igtv=50, reels=100,
+                  comments=500, liked_comments=300),
 }
 
 
@@ -328,20 +334,157 @@ def write_newer_format_folder(out_dir, scale="realistic", seed=None):
     return os.path.abspath(out_dir)
 
 
+def write_legacy_format_folder(out_dir, scale="realistic", seed=None):
+    """Write a folder tree of bogus Instagram-legacy-format files to disk.
+
+    The legacy format wraps each event-list in a dict keyed by a
+    per-source well-known name (e.g. `likes_media_likes`) and hides
+    timestamps under `string_list_data[0].timestamp` or
+    `string_map_data.Time.timestamp`. Content posts / stories / reels
+    are included too so extract_data has non-empty video_posts and
+    comments_and_likes tables.
+
+    Returns the absolute out_dir path.
+    """
+    if scale not in _SCALES:
+        raise ValueError(f"unknown scale {scale!r}; expected one of {sorted(_SCALES)}")
+    cfg = _SCALES[scale]
+    rng = random.Random(seed)
+
+    donor = _fake_name(rng)
+    # Top-level prefix mirrors real exports like `instagram_username_YYYYMMDD/`.
+    prefix = f"instagram_fixture_{rng.randrange(10**6):06d}"
+
+    def _abspath(*parts):
+        path = os.path.join(out_dir, prefix, *parts)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        return path
+
+    def _dump(path, obj):
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False, indent=2)
+
+    # Message conversations (same shape as newer)
+    for _ in range(cfg["conversations"]):
+        other = _fake_name(rng)
+        slug = f"{other.split()[0].lower()}_{rng.randrange(10**15, 10**16)}"
+        msg_count = _resolve_messages_per(rng, cfg["messages_per"])
+        timestamps = _random_timestamps(rng, msg_count, span_days=90)
+        _dump(
+            _abspath("messages", "inbox", slug, "message_1.json"),
+            {
+                "participants": [{"name": other}, {"name": donor}],
+                "messages": [
+                    {"sender_name": rng.choice([other, donor]),
+                     "timestamp_ms": t * 1000}
+                    for t in timestamps
+                ],
+                "title": other,
+                "is_still_participant": True,
+                "thread_path": f"inbox/{slug}",
+            },
+        )
+
+    # ads_and_topics — dict wrapper + string_map_data nesting
+    _dump(
+        _abspath("ads_and_topics", "videos_watched.json"),
+        {"impressions_history_videos_watched":
+            [_legacy_string_map_entry(t)
+             for t in _random_timestamps(rng, cfg["videos"])]},
+    )
+    _dump(
+        _abspath("ads_and_topics", "posts_viewed.json"),
+        {"impressions_history_posts_seen":
+            [_legacy_string_map_entry(t)
+             for t in _random_timestamps(rng, cfg["posts"])]},
+    )
+    _dump(
+        _abspath("ads_and_topics", "ads_viewed.json"),
+        {"impressions_history_ads_seen":
+            [_legacy_string_map_entry(t)
+             for t in _random_timestamps(rng, cfg["ads"])]},
+    )
+
+    # likes — dict wrapper + string_list_data nesting
+    _dump(
+        _abspath("likes", "liked_posts.json"),
+        {"likes_media_likes":
+            [_legacy_string_list_entry(t)
+             for t in _random_timestamps(rng, cfg["likes"])]},
+    )
+    _dump(
+        _abspath("likes", "liked_comments.json"),
+        {"likes_comment_likes":
+            [_legacy_string_list_entry(t)
+             for t in _random_timestamps(rng, cfg["liked_comments"])]},
+    )
+
+    # comments (list of string_map entries)
+    _dump(
+        _abspath("comments", "post_comments_1.json"),
+        [_legacy_string_map_entry(t)
+         for t in _random_timestamps(rng, cfg["comments"])],
+    )
+
+    # content — posts, stories, igtv, reels (each have creation_timestamp)
+    def _flat_ts_list(key, count):
+        return [{"creation_timestamp": t}
+                for t in _random_timestamps(rng, count)]
+
+    _dump(
+        _abspath("content", "posts_1.json"),
+        [{"media": [{"creation_timestamp": t}]}
+         for t in _random_timestamps(rng, cfg["content_posts"])],
+    )
+    _dump(
+        _abspath("content", "stories.json"),
+        {"ig_stories": _flat_ts_list("creation_timestamp", cfg["stories"])},
+    )
+    _dump(
+        _abspath("content", "igtv_videos.json"),
+        {"ig_igtv_media": _flat_ts_list("creation_timestamp", cfg["igtv"])},
+    )
+    _dump(
+        _abspath("content", "reels.json"),
+        {"ig_reels_media": _flat_ts_list("creation_timestamp", cfg["reels"])},
+    )
+
+    # followers / following — same shape as newer writer
+    _dump(
+        _abspath("followers_and_following", "followers_1.json"),
+        {"string_list_data": [
+            {"value": f"user_{rng.randrange(10**9)}"}
+            for _ in range(cfg["followers"])]},
+    )
+    _dump(
+        _abspath("followers_and_following", "following.json"),
+        {"relationships_following": [
+            {"string_list_data": [{"value": f"user_{rng.randrange(10**9)}"}]}
+            for _ in range(cfg["following"])]},
+    )
+
+    return os.path.abspath(out_dir)
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(
-        description="Generate a bogus Instagram newer-format export folder.",
+        description="Generate a bogus Instagram export folder "
+                    "(newer or legacy format).",
     )
     parser.add_argument("out_dir", help="target folder (created if missing)")
+    parser.add_argument("--format", default="newer",
+                        choices=["newer", "legacy"],
+                        help="which Instagram export shape to emit")
     parser.add_argument("--scale", default="realistic",
                         choices=sorted(_SCALES.keys()))
     parser.add_argument("--seed", type=int, default=None,
                         help="int seed for reproducibility (default: random)")
     args = parser.parse_args()
-    path = write_newer_format_folder(args.out_dir, scale=args.scale,
-                                     seed=args.seed)
-    print(f"Wrote fixture to {path}")
+    writer = (write_newer_format_folder if args.format == "newer"
+              else write_legacy_format_folder)
+    path = writer(args.out_dir, scale=args.scale, seed=args.seed)
+    print(f"Wrote {args.format} fixture to {path}")
 
 
 if __name__ == "__main__":
