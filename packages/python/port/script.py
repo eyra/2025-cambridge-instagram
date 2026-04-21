@@ -247,22 +247,62 @@ def map_to_timeslot(series):
     return series.map(lambda hour: f"{hour}-{hour+1}")
 
 
+def _resolve_event_list(data, key=None):
+    """Return the event list from a source file, tolerating both shapes.
+
+    - Newer shape: top-level list → return it
+    - Legacy shape: dict with the `key` well-known name → return dict[key]
+    - Legacy edge: dict representing a single event → return [data]
+    Returns [] when nothing matches.
+    """
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        if key is not None:
+            value = data.get(key)
+            if isinstance(value, list):
+                return value
+            if isinstance(value, dict):
+                return [value]
+            return []
+        return [data]
+    return []
+
+
+def extract_event_timestamp(item):
+    """Return a parsed timestamp from an event dict across known shapes.
+
+    Tries, in order:
+    1. newer flat shape: item["timestamp"]
+    2. legacy string_list wrapper: item["string_list_data"][0]["timestamp"]
+    3. legacy string_map wrapper: item["string_map_data"]["Time"]["timestamp"]
+    """
+    if not isinstance(item, dict):
+        return None
+    ts = get_timestamp(item, "timestamp")
+    if ts is not None:
+        return ts
+    entries = get_in(item, "string_list_data")
+    if isinstance(entries, list) and entries:
+        ts = get_timestamp(entries[0], "timestamp")
+        if ts is not None:
+            return ts
+    return get_timestamp(item, "string_map_data", "Time", "timestamp")
+
+
 def count_items(zipfile, pattern, key=None):
     count = 0
     for data in glob_json(zipfile, pattern):
-        # Some files have dictionary, others a list of dictionaries. Normalize
-        # this to always a list so the rest of the code works regardless.
-        if isinstance(data, dict):
-            data = [data]
-        for item in data:
-            if not isinstance(item, (dict, list, str)):
-                continue
-            if key is None:
-                count += len(item)
-            else:
-                value = item.get(key) if isinstance(item, dict) else None
-                if value is not None:
-                    count += len(value)
+        if key is None:
+            # Sum len of each record (used by followers/following counters)
+            if isinstance(data, dict):
+                data = [data]
+            for item in data:
+                if isinstance(item, (dict, list, str)):
+                    count += len(item)
+        else:
+            # Event-list counting — works for both shapes
+            count += len(_resolve_event_list(data, key))
     return count
 
 
@@ -556,11 +596,7 @@ def get_content_posts_timestamps(zipfile):
 
 def get_media_timestamps(zipfile, pattern, key):
     for data in glob_json(zipfile, pattern):
-        if not isinstance(data, dict):
-            continue
-        items = data.get(key)
-        if items is None:
-            continue
+        items = _resolve_event_list(data, key)
         yield from get_media_creation_timestamps(items)
 
 
@@ -580,12 +616,10 @@ def stories_timestamps(zipfile):
     )
     for pattern in patterns:
         for data in glob_json(zipfile, pattern):
-            if not isinstance(data, dict):
-                continue
-            stories = data.get("ig_stories")
-            if not isinstance(stories, list):
-                continue
-            yield from get_creation_timestamps(stories)
+            # Legacy: {"ig_stories": [...]}.  Newer (hypothetical): top-level list.
+            yield from get_creation_timestamps(
+                _resolve_event_list(data, "ig_stories")
+            )
             
 
 def df_from_timestamp_columns(a, b):
@@ -750,34 +784,19 @@ def get_post_comments_timestamps(zipfile):
 
 
 def get_string_map_timestamps(zipfile, pattern, key=None):
+    # Shape-agnostic: tries flat + legacy nested shapes per event.
     for data in glob_json(zipfile, pattern):
-        if key is not None:
-            data = get_in(data, key)
-            if data is None:
-                continue
-        items = data if isinstance(data, list) else [data]
-        for item in items:
-            ts = get_timestamp(item, "string_map_data", "Time", "timestamp")
+        for item in _resolve_event_list(data, key):
+            ts = extract_event_timestamp(item)
             if ts is not None:
                 yield ts
-
 
 
 def get_string_list_timestamps(zipfile, pattern, key=None):
-    for data in glob_json(zipfile, pattern):
-        if key is not None:
-            data = get_in(data, key)
-            if data is None:
-                continue
-        if not isinstance(data, list):
-            continue
-        for item in data:
-            entries = get_in(item, "string_list_data") or []
-            if not entries:
-                continue
-            ts = get_timestamp(entries[0], "timestamp")
-            if ts is not None:
-                yield ts
+    # Shape-agnostic — same logic as get_string_map_timestamps. The
+    # two historically distinguished which nested wrapper to expect;
+    # extract_event_timestamp now tries both plus the newer flat shape.
+    yield from get_string_map_timestamps(zipfile, pattern, key)
 
 
 def get_likes_timestamps(zipfile):
