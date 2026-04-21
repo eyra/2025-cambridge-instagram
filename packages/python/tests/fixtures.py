@@ -336,6 +336,14 @@ def write_newer_format_folder(out_dir, scale="realistic", seed=None):
          for t in _random_timestamps(rng, cfg["liked_comments"])],
     )
 
+    # comments — top-level list + flat `timestamp`.  (Order matches the
+    # legacy writer so the RNG streams stay aligned: conversations →
+    # ads_and_topics → likes → comments → content.)
+    _dump(
+        _abspath("your_instagram_activity", "comments", "post_comments_1.json"),
+        [_newer_flat_event(t) for t in _random_timestamps(rng, cfg["comments"])],
+    )
+
     # content (posts / stories / igtv / reels) — top-level list +
     # flat `creation_timestamp`. Paths live under the newer
     # `your_instagram_activity/media/...` location.
@@ -350,12 +358,6 @@ def write_newer_format_folder(out_dir, scale="realistic", seed=None):
             [{"creation_timestamp": t}
              for t in _random_timestamps(rng, count)],
         )
-
-    # comments — top-level list + flat `timestamp`
-    _dump(
-        _abspath("your_instagram_activity", "comments", "post_comments_1.json"),
-        [_newer_flat_event(t) for t in _random_timestamps(rng, cfg["comments"])],
-    )
 
     # Followers / following still use the legacy summary shape — the
     # newer shape for these is unconfirmed against a participant zip.
@@ -402,7 +404,10 @@ def write_legacy_format_folder(out_dir, scale="realistic", seed=None):
 
     donor = _fake_name(rng)
     # Top-level prefix mirrors real exports like `instagram_username_YYYYMMDD/`.
-    prefix = f"instagram_fixture_{rng.randrange(10**6):06d}"
+    # Kept constant so the RNG stream stays aligned with write_newer_format_folder
+    # — that way a given (scale, seed) yields identical event counts in both
+    # fixtures.
+    prefix = "instagram_fixture"
 
     def _abspath(*parts):
         path = os.path.join(out_dir, prefix, *parts)
