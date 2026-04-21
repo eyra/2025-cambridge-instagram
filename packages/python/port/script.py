@@ -274,14 +274,16 @@ def extract_event_timestamp(item):
 
     Tries, in order:
     1. newer flat shape: item["timestamp"]
-    2. legacy string_list wrapper: item["string_list_data"][0]["timestamp"]
-    3. legacy string_map wrapper: item["string_map_data"]["Time"]["timestamp"]
+    2. newer flat shape (content): item["creation_timestamp"]
+    3. legacy string_list wrapper: item["string_list_data"][0]["timestamp"]
+    4. legacy string_map wrapper: item["string_map_data"]["Time"]["timestamp"]
     """
     if not isinstance(item, dict):
         return None
-    ts = get_timestamp(item, "timestamp")
-    if ts is not None:
-        return ts
+    for flat_key in ("timestamp", "creation_timestamp"):
+        ts = get_timestamp(item, flat_key)
+        if ts is not None:
+            return ts
     entries = get_in(item, "string_list_data")
     if isinstance(entries, list) and entries:
         ts = get_timestamp(entries[0], "timestamp")
@@ -293,16 +295,7 @@ def extract_event_timestamp(item):
 def count_items(zipfile, pattern, key=None):
     count = 0
     for data in glob_json(zipfile, pattern):
-        if key is None:
-            # Sum len of each record (used by followers/following counters)
-            if isinstance(data, dict):
-                data = [data]
-            for item in data:
-                if isinstance(item, (dict, list, str)):
-                    count += len(item)
-        else:
-            # Event-list counting — works for both shapes
-            count += len(_resolve_event_list(data, key))
+        count += len(_resolve_event_list(data, key))
     return count
 
 
@@ -559,15 +552,22 @@ def extract_direct_message_activity(zipfile):
 def flatten_media(media):
     if isinstance(media, list):
         for item in media:
-            if isinstance(item, dict) and isinstance(item.get("media"), list):
-                yield from item["media"]
+            if not isinstance(item, dict):
+                continue
+            nested = item.get("media")
+            if isinstance(nested, list):
+                # Legacy shape: media entries live in a nested "media" list.
+                yield from nested
+            else:
+                # Newer flat shape: the post itself carries the timestamp.
+                yield item
     else:
         yield media
 
 
 def get_creation_timestamps(items):
     for item in items:
-        ts = get_timestamp(item, "creation_timestamp")
+        ts = extract_event_timestamp(item)
         if ts is not None:
             yield ts
 
@@ -577,27 +577,24 @@ def get_media_creation_timestamps(items):
 
 
 def get_content_posts_timestamps(zipfile):
-    # Old format
-    for data in glob_json(zipfile, "*/content/posts_*.json"):
-
-        yield from get_media_creation_timestamps(data)
-    # New format: yield the first media item's timestamp per post
-    for data in glob_json(zipfile, "your_instagram_activity/media/posts_*.json"):
-        if not isinstance(data, list):
-            continue
-        for post in data:
-            media_list = get_in(post, "media") or []
-            for media in media_list:
-                ts = get_timestamp(media, "creation_timestamp")
-                if ts is not None:
-                    yield ts
-                    break
+    # Both legacy `*/content/posts_*.json` and newer
+    # `your_instagram_activity/media/posts_*.json` yield via the same
+    # flatten_media + get_creation_timestamps pipeline, which now handles:
+    #   - legacy post entries wrapping media[].creation_timestamp
+    #   - newer flat post entries with creation_timestamp/timestamp at root
+    for pattern in ("*/content/posts_*.json",
+                    "your_instagram_activity/media/posts_*.json"):
+        for data in glob_json(zipfile, pattern):
+            yield from get_media_creation_timestamps(data)
 
 
-def get_media_timestamps(zipfile, pattern, key):
-    for data in glob_json(zipfile, pattern):
-        items = _resolve_event_list(data, key)
-        yield from get_media_creation_timestamps(items)
+def get_media_timestamps(zipfile, patterns, key):
+    if isinstance(patterns, str):
+        patterns = (patterns,)
+    for pattern in patterns:
+        for data in glob_json(zipfile, pattern):
+            items = _resolve_event_list(data, key)
+            yield from get_media_creation_timestamps(items)
 
 
 def df_from_timestamps(timestamps, column):
@@ -652,8 +649,18 @@ def df_from_timestamp_columns(a, b):
 def get_video_posts_timestamps(zipfile):
     return itertools.chain(
         get_content_posts_timestamps(zipfile),
-        get_media_timestamps(zipfile, "*/content/igtv_videos.json", "ig_igtv_media"),
-        get_media_timestamps(zipfile, "*/content/reels.json", "ig_reels_media"),
+        get_media_timestamps(
+            zipfile,
+            ("*/content/igtv_videos.json",
+             "your_instagram_activity/media/igtv_videos.json"),
+            "ig_igtv_media",
+        ),
+        get_media_timestamps(
+            zipfile,
+            ("*/content/reels.json",
+             "your_instagram_activity/media/reels.json"),
+            "ig_reels_media",
+        ),
     )
 
 
