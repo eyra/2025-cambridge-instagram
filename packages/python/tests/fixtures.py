@@ -21,6 +21,7 @@ responsible for unlinking the file.
 
 import json
 import os
+import random
 import tempfile
 import zipfile
 
@@ -28,6 +29,20 @@ import zipfile
 # Deterministic Unix timestamps so tests can assert counts and ranges.
 # 2026-01-01 00:00:00 UTC == 1767225600
 _BASE_TS = 1767225600
+
+# Bogus name pools for randomized fixtures.
+_FIRST_NAMES = [
+    "Alex", "Bailey", "Casey", "Dakota", "Ellis", "Frankie", "Gray",
+    "Harper", "Indigo", "Jules", "Kai", "Logan", "Morgan", "Nova",
+    "Oakley", "Parker", "Quinn", "Reese", "Sage", "Taylor", "Unity",
+    "Val", "Wren", "Xen", "Yuki", "Zephyr",
+]
+_LAST_NAMES = [
+    "Ash", "Brook", "Cole", "Drew", "East", "Fern", "Glen",
+    "Hale", "Isle", "Jade", "Knox", "Lark", "Moss", "North",
+    "Orr", "Pine", "Quill", "Rook", "Sable", "Teal", "Vale",
+    "Wade", "Yale", "Zane",
+]
 
 
 def _ts(offset_hours):
@@ -182,3 +197,152 @@ def make_legacy_format_zip():
         },
     }
     return _write_zip(files)
+
+
+# ---------------------------------------------------------------------------
+# Realistic-scale random fixture (written to a folder on disk)
+# ---------------------------------------------------------------------------
+
+_SCALES = {
+    "small": dict(conversations=2, messages_per=5, videos=10, posts=5, ads=2,
+                  likes=7, followers=4, following=3),
+    "realistic": dict(conversations=11, messages_per=(20, 80), videos=800,
+                      posts=250, ads=40, likes=40, followers=120,
+                      following=160),
+    "large": dict(conversations=50, messages_per=(50, 400), videos=5000,
+                  posts=1500, ads=300, likes=400, followers=1200,
+                  following=1500),
+}
+
+
+def _fake_name(rng):
+    return f"{rng.choice(_FIRST_NAMES)} {rng.choice(_LAST_NAMES)}"
+
+
+def _random_timestamps(rng, count, span_days=180):
+    """Return `count` ascending uniformly-random Unix timestamps."""
+    span_seconds = span_days * 24 * 3600
+    return sorted(rng.randint(_BASE_TS, _BASE_TS + span_seconds)
+                  for _ in range(count))
+
+
+def _resolve_messages_per(rng, spec):
+    if isinstance(spec, tuple):
+        lo, hi = spec
+        return rng.randint(lo, hi)
+    return spec
+
+
+def write_newer_format_folder(out_dir, scale="realistic", seed=None):
+    """Write a folder tree of bogus Instagram-newer-format files to disk.
+
+    Args:
+        out_dir: target directory. Created if missing. Existing contents
+            are not cleared.
+        scale: "small" / "realistic" / "large" — see _SCALES for counts.
+        seed: int for reproducibility (None = truly random).
+
+    Returns the absolute out_dir path.
+    """
+    if scale not in _SCALES:
+        raise ValueError(f"unknown scale {scale!r}; expected one of {sorted(_SCALES)}")
+    cfg = _SCALES[scale]
+    rng = random.Random(seed)
+
+    donor = _fake_name(rng)
+
+    def _abspath(*parts):
+        path = os.path.join(out_dir, *parts)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        return path
+
+    def _dump(path, obj):
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False, indent=2)
+
+    # Message conversations (newer format: inbox/<slug>/message_1.json)
+    for _ in range(cfg["conversations"]):
+        other = _fake_name(rng)
+        slug = f"{other.split()[0].lower()}_{rng.randrange(10**15, 10**16)}"
+        msg_count = _resolve_messages_per(rng, cfg["messages_per"])
+        timestamps = _random_timestamps(rng, msg_count, span_days=90)
+        messages = [
+            {
+                "sender_name": rng.choice([other, donor]),
+                "timestamp_ms": t * 1000,
+            }
+            for t in timestamps
+        ]
+        _dump(
+            _abspath("your_instagram_activity", "messages", "inbox", slug,
+                    "message_1.json"),
+            {
+                "participants": [{"name": other}, {"name": donor}],
+                "messages": messages,
+                "title": other,
+                "is_still_participant": True,
+                "thread_path": f"inbox/{slug}",
+                "magic_words": [],
+            },
+        )
+
+    # Newer-format top-level-list files
+    for name, count in [
+        ("videos_watched.json", cfg["videos"]),
+        ("posts_viewed.json", cfg["posts"]),
+        ("ads_viewed.json", cfg["ads"]),
+    ]:
+        _dump(
+            _abspath("ads_information", "ads_and_topics", name),
+            [_newer_flat_event(t) for t in _random_timestamps(rng, count)],
+        )
+
+    _dump(
+        _abspath("your_instagram_activity", "likes", "liked_posts.json"),
+        [_newer_flat_event(t) for t in _random_timestamps(rng, cfg["likes"])],
+    )
+
+    # Followers / following still use the legacy summary shape — the
+    # newer shape for these is unconfirmed against a participant zip.
+    _dump(
+        _abspath("connections", "followers_and_following", "followers_1.json"),
+        {
+            "string_list_data": [
+                {"value": f"user_{rng.randrange(10**9)}"}
+                for _ in range(cfg["followers"])
+            ],
+        },
+    )
+    _dump(
+        _abspath("connections", "followers_and_following", "following.json"),
+        {
+            "relationships_following": [
+                {"string_list_data": [
+                    {"value": f"user_{rng.randrange(10**9)}"}
+                ]}
+                for _ in range(cfg["following"])
+            ],
+        },
+    )
+
+    return os.path.abspath(out_dir)
+
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(
+        description="Generate a bogus Instagram newer-format export folder.",
+    )
+    parser.add_argument("out_dir", help="target folder (created if missing)")
+    parser.add_argument("--scale", default="realistic",
+                        choices=sorted(_SCALES.keys()))
+    parser.add_argument("--seed", type=int, default=None,
+                        help="int seed for reproducibility (default: random)")
+    args = parser.parse_args()
+    path = write_newer_format_folder(args.out_dir, scale=args.scale,
+                                     seed=args.seed)
+    print(f"Wrote fixture to {path}")
+
+
+if __name__ == "__main__":
+    main()
