@@ -49,3 +49,4 @@ node_modules/
 
 tests/random_instagram_fixture/
 tests/random_instagram_fixture_legacy/
+tests/random_instagram_fixture*.zip

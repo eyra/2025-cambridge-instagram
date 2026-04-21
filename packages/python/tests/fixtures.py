@@ -466,6 +466,19 @@ def write_legacy_format_folder(out_dir, scale="realistic", seed=None):
     return os.path.abspath(out_dir)
 
 
+def _zip_folder(folder):
+    """Zip `folder` to sibling `<folder>.zip`. Returns zip path."""
+    zip_path = folder.rstrip("/") + ".zip"
+    if os.path.exists(zip_path):
+        os.unlink(zip_path)
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for root, _, files in os.walk(folder):
+            for name in files:
+                full = os.path.join(root, name)
+                zf.write(full, os.path.relpath(full, folder))
+    return zip_path
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(
@@ -480,11 +493,16 @@ def main():
                         choices=sorted(_SCALES.keys()))
     parser.add_argument("--seed", type=int, default=None,
                         help="int seed for reproducibility (default: random)")
+    parser.add_argument("--zip", action="store_true",
+                        help="also emit <out_dir>.zip alongside the folder")
     args = parser.parse_args()
     writer = (write_newer_format_folder if args.format == "newer"
               else write_legacy_format_folder)
     path = writer(args.out_dir, scale=args.scale, seed=args.seed)
     print(f"Wrote {args.format} fixture to {path}")
+    if args.zip:
+        zip_path = _zip_folder(path)
+        print(f"Zipped to {zip_path}")
 
 
 if __name__ == "__main__":
