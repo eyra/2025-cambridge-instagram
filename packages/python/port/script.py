@@ -101,8 +101,26 @@ def parse_datetime(value):
     return uk_timezone.normalize(utc_datetime.astimezone(uk_timezone))
 
 
+def get_timestamp(data, *key_path):
+    """Navigate a nested dict path, then parse the leaf value as a timestamp.
+
+    Returns None if any intermediate key is missing, the final value is
+    None, or it isn't a parseable Unix timestamp. Used by the extraction
+    helpers so a malformed record is skipped rather than raising.
+    """
+    value = get_in(data, *key_path) if key_path else data
+    if value is None:
+        return None
+    try:
+        return parse_datetime(value)
+    except (TypeError, ValueError, OSError, OverflowError):
+        return None
+
+
 def get_in(data_dict, *key_path):
     for k in key_path:
+        if not isinstance(data_dict, dict):
+            return None
         data_dict = data_dict.get(k, None)
         if data_dict is None:
             return None
@@ -229,18 +247,55 @@ def map_to_timeslot(series):
     return series.map(lambda hour: f"{hour}-{hour+1}")
 
 
+def _resolve_event_list(data, key=None):
+    """Return the event list from a source file, tolerating both shapes.
+
+    - Newer shape: top-level list → return it
+    - Legacy shape: dict with the `key` well-known name → return dict[key]
+    - Legacy edge: dict representing a single event → return [data]
+    Returns [] when nothing matches.
+    """
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        if key is not None:
+            value = data.get(key)
+            if isinstance(value, list):
+                return value
+            if isinstance(value, dict):
+                return [value]
+            return []
+        return [data]
+    return []
+
+
+def extract_event_timestamp(item):
+    """Return a parsed timestamp from an event dict across known shapes.
+
+    Tries, in order:
+    1. newer flat shape: item["timestamp"]
+    2. newer flat shape (content): item["creation_timestamp"]
+    3. legacy string_list wrapper: item["string_list_data"][0]["timestamp"]
+    4. legacy string_map wrapper: item["string_map_data"]["Time"]["timestamp"]
+    """
+    if not isinstance(item, dict):
+        return None
+    for flat_key in ("timestamp", "creation_timestamp"):
+        ts = get_timestamp(item, flat_key)
+        if ts is not None:
+            return ts
+    entries = get_in(item, "string_list_data")
+    if isinstance(entries, list) and entries:
+        ts = get_timestamp(entries[0], "timestamp")
+        if ts is not None:
+            return ts
+    return get_timestamp(item, "string_map_data", "Time", "timestamp")
+
+
 def count_items(zipfile, pattern, key=None):
     count = 0
     for data in glob_json(zipfile, pattern):
-        # Some files have dictionary, others a list of dictionaries. Normalize
-        # this to always a list so the rest of the code works regardless.
-        if isinstance(data, dict):
-            data = [data]
-        for item in data:
-            if key is None:
-                count += len(item)
-            else:
-                count += len(item[key])
+        count += len(_resolve_event_list(data, key))
     return count
 
 
@@ -256,22 +311,29 @@ def count_messages(zipfile):
     conversation_count = 0
     for data in glob_json(zipfile, "*/messages/inbox/**/message_*.json"):
         conversation_count += 1
-        try:
-            donating_user = get_donating_user(data)
-            msg_count = len(data.get("messages", []))
-            logger.debug(f"count_messages: Conversation {conversation_count} with user '{donating_user}', {msg_count} messages")
-            for message in data["messages"]:
-                key = "sent" if message.get("sender_name") == donating_user else "received"
-                counts[key] += 1
-        except Exception as e:
-            logger.warning(f"count_messages: Error processing conversation {conversation_count}: {e}")
+        donating_user = get_donating_user(data)
+        if donating_user is None:
+            logger.debug(f"count_messages: Conversation {conversation_count} has no identifiable donating user, skipping")
+            continue
+        messages = get_in(data, "messages") or []
+        logger.debug(f"count_messages: Conversation {conversation_count} with user '{donating_user}', {len(messages)} messages")
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            key = "sent" if message.get("sender_name") == donating_user else "received"
+            counts[key] += 1
     logger.debug(f"count_messages: Processed {conversation_count} conversations, sent={counts['sent']}, received={counts['received']}")
     return counts
 
 
 def get_donating_user(data):
-    participants = data["participants"]
-    return participants[len(participants) - 1]["name"]
+    participants = data.get("participants") if isinstance(data, dict) else None
+    if not participants:
+        return None
+    last = participants[-1]
+    if not isinstance(last, dict):
+        return None
+    return last.get("name")
 
 
 def extract_summary_data(zipfile, locale="en"):
@@ -490,14 +552,24 @@ def extract_direct_message_activity(zipfile):
 def flatten_media(media):
     if isinstance(media, list):
         for item in media:
-            yield from item["media"]
+            if not isinstance(item, dict):
+                continue
+            nested = item.get("media")
+            if isinstance(nested, list):
+                # Legacy shape: media entries live in a nested "media" list.
+                yield from nested
+            else:
+                # Newer flat shape: the post itself carries the timestamp.
+                yield item
     else:
         yield media
 
 
 def get_creation_timestamps(items):
     for item in items:
-        yield parse_datetime(item["creation_timestamp"])
+        ts = extract_event_timestamp(item)
+        if ts is not None:
+            yield ts
 
 
 def get_media_creation_timestamps(items):
@@ -505,21 +577,24 @@ def get_media_creation_timestamps(items):
 
 
 def get_content_posts_timestamps(zipfile):
-    # Old format
-    for data in glob_json(zipfile, "*/content/posts_*.json"):
+    # Both legacy `*/content/posts_*.json` and newer
+    # `your_instagram_activity/media/posts_*.json` yield via the same
+    # flatten_media + get_creation_timestamps pipeline, which now handles:
+    #   - legacy post entries wrapping media[].creation_timestamp
+    #   - newer flat post entries with creation_timestamp/timestamp at root
+    for pattern in ("*/content/posts_*.json",
+                    "your_instagram_activity/media/posts_*.json"):
+        for data in glob_json(zipfile, pattern):
+            yield from get_media_creation_timestamps(data)
 
-        yield from get_media_creation_timestamps(data)
-    # New format
-    for data in glob_json(zipfile, "your_instagram_activity/media/posts_*.json"):
-        for post in data:
-            for media in post["media"]:
-                yield parse_datetime(media["creation_timestamp"])
-                break
 
-
-def get_media_timestamps(zipfile, pattern, key):
-    for data in glob_json(zipfile, pattern):
-        yield from get_media_creation_timestamps(data[key])
+def get_media_timestamps(zipfile, patterns, key):
+    if isinstance(patterns, str):
+        patterns = (patterns,)
+    for pattern in patterns:
+        for data in glob_json(zipfile, pattern):
+            items = _resolve_event_list(data, key)
+            yield from get_media_creation_timestamps(items)
 
 
 def df_from_timestamps(timestamps, column):
@@ -532,15 +607,16 @@ def df_from_timestamps(timestamps, column):
 
 
 def stories_timestamps(zipfile):
-    # Old format
-    for data in glob_json(zipfile, "*/content/stories.json"):
-        for item in data["ig_stories"]:
-            yield parse_datetime(item["creation_timestamp"])
-
-    # New format
-    for data in glob_json(zipfile, "your_instagram_activity/media/stories.json"):
-        for item in data["ig_stories"]:
-            yield parse_datetime(item["creation_timestamp"])
+    patterns = (
+        "*/content/stories.json",
+        "your_instagram_activity/media/stories.json",
+    )
+    for pattern in patterns:
+        for data in glob_json(zipfile, pattern):
+            # Legacy: {"ig_stories": [...]}.  Newer (hypothetical): top-level list.
+            yield from get_creation_timestamps(
+                _resolve_event_list(data, "ig_stories")
+            )
             
 
 def df_from_timestamp_columns(a, b):
@@ -573,8 +649,18 @@ def df_from_timestamp_columns(a, b):
 def get_video_posts_timestamps(zipfile):
     return itertools.chain(
         get_content_posts_timestamps(zipfile),
-        get_media_timestamps(zipfile, "*/content/igtv_videos.json", "ig_igtv_media"),
-        get_media_timestamps(zipfile, "*/content/reels.json", "ig_reels_media"),
+        get_media_timestamps(
+            zipfile,
+            ("*/content/igtv_videos.json",
+             "your_instagram_activity/media/igtv_videos.json"),
+            "ig_igtv_media",
+        ),
+        get_media_timestamps(
+            zipfile,
+            ("*/content/reels.json",
+             "your_instagram_activity/media/reels.json"),
+            "ig_reels_media",
+        ),
     )
 
 
@@ -705,23 +791,19 @@ def get_post_comments_timestamps(zipfile):
 
 
 def get_string_map_timestamps(zipfile, pattern, key=None):
+    # Shape-agnostic: tries flat + legacy nested shapes per event.
     for data in glob_json(zipfile, pattern):
-        if key is not None:
-            data = data[key]
-        if isinstance(data, list):
-            for item in data:
-                yield parse_datetime(item["string_map_data"]["Time"]["timestamp"])
-        else:
-            yield parse_datetime(data["string_map_data"]["Time"]["timestamp"])
-
+        for item in _resolve_event_list(data, key):
+            ts = extract_event_timestamp(item)
+            if ts is not None:
+                yield ts
 
 
 def get_string_list_timestamps(zipfile, pattern, key=None):
-    for data in glob_json(zipfile, pattern):
-        if key is not None:
-            data = data[key]
-        for item in data:
-            yield parse_datetime(item["string_list_data"][0]["timestamp"])
+    # Shape-agnostic — same logic as get_string_map_timestamps. The
+    # two historically distinguished which nested wrapper to expect;
+    # extract_event_timestamp now tries both plus the newer flat shape.
+    yield from get_string_map_timestamps(zipfile, pattern, key)
 
 
 def get_likes_timestamps(zipfile):
