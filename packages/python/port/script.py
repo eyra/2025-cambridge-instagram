@@ -341,3 +341,16 @@ def donate(key, json_string):
 
 def exit(code, info):
     return CommandSystemExit(code, info)
+
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) < 2:
+        print("Usage: python -m port.script path/to/file.zip")
+        sys.exit(1)
+    gen = extract_data(sys.argv[1])
+    try:
+        while True:
+            next(gen)
+    except StopIteration as e:
+        print(e.value)

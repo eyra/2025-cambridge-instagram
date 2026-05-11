@@ -104,7 +104,7 @@ You can run the extraction locally against a real zip file — no browser or Pyo
 
 ```bash
 cd packages/python
-poetry run port-extract path/to/file.zip
+poetry run python -m port.script path/to/file.zip
 ```
 
 This drives `extract_data()` directly and prints each extracted table to the terminal. Useful for quickly verifying that your extraction logic works before testing it in the browser.
