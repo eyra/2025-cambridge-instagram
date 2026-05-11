@@ -2,25 +2,13 @@
 
 import logging
 import sys
-import types
 from pathlib import Path
 
 # Add packages/python to sys.path so the `port` package resolves.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Stub `port.script` and `port.api.file_utils` before importing `port.main`.
-# Their real modules pull in pandas (via props.py) and Pyodide-only `js`
-# respectively, neither of which is needed for testing the wrapper.
-_fake_script = types.ModuleType("port.script")
-_fake_script.process = lambda *_: iter([])
-sys.modules["port.script"] = _fake_script
-
-_fake_file_utils = types.ModuleType("port.api.file_utils")
-_fake_file_utils.AsyncFileAdapter = lambda value: value
-sys.modules["port.api.file_utils"] = _fake_file_utils
-
-from port.main import ScriptWrapper  # noqa: E402
-from port.api.commands import CommandUIRender, FlushLogs  # noqa: E402
+from port.main import ScriptWrapper
+from port.api.commands import CommandUIRender, FlushLogs
 
 
 class _StubPage:
