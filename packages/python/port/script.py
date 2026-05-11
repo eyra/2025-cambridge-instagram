@@ -1121,54 +1121,27 @@ def extract_data(path, locale="en"):
         logger.error("extract_data: HTML format detected, raising error")
         raise HtmlFormatError("Instagram data export is in HTML format, JSON format is required")
 
-    logger.info("extract_data: Starting data extraction from 5 sources")
     yield FlushLogs
     results = []
 
-    logger.debug("extract_data: Extracting summary data...")
-    try:
-        results.append(extract_summary_data(zfile, locale))
-        logger.info("extract_data: Summary data extracted successfully")
-        yield FlushLogs
-    except Exception as e:
-        logger.error(f"extract_data: Failed to extract summary data: {e}", exc_info=True)
-        raise
+    extractors = [
+        ("summary data",            lambda: extract_summary_data(zfile, locale)),
+        ("video posts",             lambda: extract_video_posts(zfile)),
+        ("comments and likes",      lambda: extract_comments_and_likes(zfile)),
+        ("viewed content",          lambda: extract_viewed(zfile)),
+        ("direct message activity", lambda: extract_direct_message_activity(zfile)),
+    ]
 
-    logger.debug("extract_data: Extracting video posts...")
-    try:
-        results.append(extract_video_posts(zfile))
-        logger.info("extract_data: Video posts extracted successfully")
-        yield FlushLogs
-    except Exception as e:
-        logger.error(f"extract_data: Failed to extract video posts: {e}", exc_info=True)
-        raise
-
-    logger.debug("extract_data: Extracting comments and likes...")
-    try:
-        results.append(extract_comments_and_likes(zfile))
-        logger.info("extract_data: Comments and likes extracted successfully")
-        yield FlushLogs
-    except Exception as e:
-        logger.error(f"extract_data: Failed to extract comments and likes: {e}", exc_info=True)
-        raise
-
-    logger.debug("extract_data: Extracting viewed content...")
-    try:
-        results.append(extract_viewed(zfile))
-        logger.info("extract_data: Viewed content extracted successfully")
-        yield FlushLogs
-    except Exception as e:
-        logger.error(f"extract_data: Failed to extract viewed content: {e}", exc_info=True)
-        raise
-
-    logger.debug("extract_data: Extracting direct message activity...")
-    try:
-        results.append(extract_direct_message_activity(zfile))
-        logger.info("extract_data: Direct message activity extracted successfully")
-        yield FlushLogs
-    except Exception as e:
-        logger.error(f"extract_data: Failed to extract direct message activity: {e}", exc_info=True)
-        raise
+    for name, fn in extractors:
+        logger.debug(f"extract_data: Extracting {name}...")
+        try:
+            results.append(fn())
+            logger.info(f"extract_data: {name} extracted successfully")
+            yield FlushLogs
+        except Exception as e:
+            logger.error(f"extract_data: Failed to extract {name}: {e}", exc_info=True)
+            yield FlushLogs
+            raise
 
     logger.info(f"extract_data: Extraction complete, returning {len(results)} results")
     yield results
