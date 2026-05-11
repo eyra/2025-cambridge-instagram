@@ -3,6 +3,7 @@ import logging
 import port.api.props as props
 from port.api.commands import CommandSystemDonate, CommandUIRender, FlushLogs
 
+import logging
 import pandas as pd
 import zipfile
 import json
@@ -75,6 +76,11 @@ i18n_table = {
     }
 }
 
+logger = logging.getLogger(__name__)
+
+
+def donate(key, data):
+    return CommandSystemDonate(key=key, json_string=data)
 
 def get_translated_text(key, locale="en"):
     """
@@ -1379,7 +1385,10 @@ def render_donation_page(platform, body):
                 "en": platform,
                 "de": platform,
                 "it": platform,
+                "es": platform,
                 "nl": platform,
+                "ro": platform,
+                "lt": platform,
             }
         )
     )
@@ -1393,7 +1402,10 @@ def retry_confirmation(platform):
             "en": f"Unfortunately, we cannot process your data. Please make sure that you selected a zip file, and JSON as a file format when downloading your data from Instagram.",
             "de": f"Leider können wir Ihre Daten nicht verarbeiten. Bitte stellen Sie sicher, dass Sie eine ZIP-Datei und JSON als Dateiformat ausgewählt haben, als Sie Ihre Daten von Instagram heruntergeladen haben.",
             "it": f"Purtroppo non possiamo elaborare i tuoi dati. Assicurati di aver selezionato un file ZIP e il formato JSON quando hai scaricato i dati da Instagram.",
+            "es": "Lamentablemente, no podemos procesar su archivo. Continúe si está seguro de que ha seleccionado el archivo correcto. Intente seleccionar un archivo diferente.",
             "nl": f"Helaas kunnen we uw gegevens niet verwerken. Zorg ervoor dat u een ZIP-bestand en JSON als bestandsformaat hebt geselecteerd bij het downloaden van uw gegevens van Instagram.",
+            "ro": "Din păcate, nu putem procesa fișierul dvs. Continuați dacă sunteți sigur că ați selectat fișierul corect. Încercați din nou pentru a selecta un fișier diferit.",
+            "lt": "Deja, negalime apdoroti jūsų failo. Tęskite, jei esate tikri, kad pasirinkote tinkamą failą. Bandykite dar kartą pasirinkti kitą failą.",
         }
     )
     ok = props.Translatable(
@@ -1402,6 +1414,8 @@ def retry_confirmation(platform):
             "de": "Erneut versuchen",
             "it": "Riprova",
             "nl": "Probeer opnieuw",
+            "ro": "Încercați din nou",
+            "lt": "Bandykite dar kartą",
         }
     )
     cancel = props.Translatable(
@@ -1409,7 +1423,10 @@ def retry_confirmation(platform):
             "en": "Continue",
             "de": "Weiter",
             "it": "Continua",
+            "es": "Continuar",
             "nl": "Verder",
+            "ro": "Continuați",
+            "lt": "Tęsti",
         }
     )
     return props.PropsUIPromptConfirm(text, ok, cancel)
@@ -1450,6 +1467,9 @@ def prompt_consent(id, data, meta_data):
             "de": "Inhalt der ZIP-Datei",
             "it": "Contenuto del file ZIP",
             "nl": "Inhoud zipbestand",
+            "es": "Contenido del archivo ZIP",
+            "ro": "Conținutul fișierului ZIP",
+            "lt": "ZIP failo turinys",
         }
     )
     log_title = props.Translatable(

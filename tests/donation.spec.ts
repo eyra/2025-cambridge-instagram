@@ -4,7 +4,7 @@ import * as path from 'path';
 test('can upload a zip file and view contents', async ({ page }) => {
   // Navigate to the local development server
   await page.goto('http://localhost:3000/');
-  
+
   // Wait for the page to load with increased timeout
   await expect(page.getByRole('heading', { name: 'Instagram' })).toBeVisible({ timeout: 30000 });
   
