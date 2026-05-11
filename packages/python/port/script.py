@@ -117,6 +117,8 @@ def get_timestamp(data, *key_path):
     value = get_in(data, *key_path) if key_path else data
     if value is None:
         return None
+    if isinstance(value, (int, float)) and value < 0:
+        return None
     try:
         return parse_datetime(value)
     except (TypeError, ValueError, OSError, OverflowError):
