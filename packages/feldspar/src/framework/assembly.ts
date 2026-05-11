@@ -20,6 +20,6 @@ export default class Assembly {
     this.router = new CommandRouter(bridge, this.visualizationEngine)
     this.logForwarder = new LogForwarder((entries) => bridge.sendLogs(entries), logLevel)
     this.windowLogSource = new WindowLogSource(this.logForwarder)
-    this.processingEngine = new WorkerProcessingEngine(sessionId, locale, worker, this.router, this.logForwarder);
+    this.processingEngine = new WorkerProcessingEngine(sessionId, locale, worker, this.router, this.logForwarder)
   }
 }
