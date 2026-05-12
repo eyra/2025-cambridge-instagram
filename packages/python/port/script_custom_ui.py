@@ -168,18 +168,7 @@ def retry_confirmation():
             "lt": "Bandykite dar kartą",
         }
     )
-    cancel = props.Translatable(
-        {
-            "en": "Continue",
-            "de": "Weiter",
-            "it": "Continua",
-            "es": "Continuar",
-            "nl": "Verder",
-            "ro": "Continuați",
-            "lt": "Tęsti",
-        }
-    )
-    return props.PropsUIPromptConfirm(text, ok, cancel)
+    return props.PropsUIPromptConfirm(text, ok)
 
 
 def prompt_file(extensions):
